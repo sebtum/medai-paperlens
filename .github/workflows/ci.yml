@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync
+
+      # ruff: fast linter covering style, bugs, naming, modern Python, and FastAPI patterns
+      - name: Lint
+        run: uv run ruff check .
+
+      # bandit: static security analysis — flags dangerous functions, injection risks, hardcoded secrets
+      - name: Security scan
+        run: uv run bandit -r app/ -c pyproject.toml
+
+      # mypy: static type checker — enforces type annotations and catches interface mismatches
+      - name: Type check
+        run: uv run mypy app/
+
+      # pip-audit: scans installed dependencies for known CVEs from PyPI Advisory Database
+      - name: Dependency audit
+        run: uv run pip-audit
+
+      # pytest: runs the test suite — behaviour correctness, not just static analysis
+      - name: Tests
+        run: uv run pytest

@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+
+# Editor
+*.swp
+*.swo
+*~
+
+# Environment variables — never commit secrets
+.env
+.env.*
+!.env.example
+
+# Testing artefacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking cache
+.mypy_cache/
+
+# Build
+*.egg-info/
+dist/
+build/
+
+# Claude Code — local overrides are personal, not team-shared
+.claude/settings.local.json

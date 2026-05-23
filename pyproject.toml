@@ -1,0 +1,53 @@
+[project]
+name = "medai-paperlens"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.136.1",
+    "idna>=3.15",       # pinned above CVE-2026-45409
+    "starlette>=1.0.1", # pinned above PYSEC-2026-161 (transitive via fastapi)
+    "uvicorn>=0.46.0",
+]
+
+[dependency-groups]
+dev = [
+    "bandit>=1.8.0",          # security linter: detects vulnerabilities in Python code (eval, shell injection, hardcoded secrets...)
+    "httpx>=0.28.1",
+    "mypy>=1.20.2",
+    "pip-audit>=2.9.0",       # dependency scanner: flags packages with known CVEs from PyPI Advisory Database
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.25.0",
+    "ruff>=0.15.12",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.14"
+ignore_missing_imports = true
+strict = false
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors — PEP 8 style violations
+    "F",    # pyflakes — unused imports, undefined names, unreachable code
+    "I",    # isort — import ordering and grouping
+    "N",    # pep8-naming — enforces snake_case for functions, PascalCase for classes
+    "UP",   # pyupgrade — modernizes syntax for the target Python version (f-strings, union types...)
+    "B",    # flake8-bugbear — catches likely bugs and risky design patterns beyond style
+    "C4",   # flake8-comprehensions — prefers list/dict/set comprehensions over map()/filter()
+    "SIM",  # flake8-simplify — simplifies redundant conditions and boolean expressions
+    "RUF",  # ruff-specific rules — Python anti-patterns not covered by other linters
+    "FAST", # FastAPI rules — validates endpoint signatures, response models, and Depends() usage
+]
+ignore = [
+    "B008", # FastAPI uses Depends() as a default argument — this pattern is intentional
+]
+
+[tool.bandit]
+# bandit scans the app source only; tests use assert intentionally and are excluded
+exclude_dirs = ["tests", ".venv"]

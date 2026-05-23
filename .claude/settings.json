@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import sys,json,subprocess; d=json.load(sys.stdin); f=d.get('tool_input',{}).get('file_path',''); f.endswith('.py') and subprocess.run(['uv','run','ruff','check',f])\"",
+            "statusMessage": "ruff check..."
+          }
+        ]
+      }
+    ]
+  }
+}
