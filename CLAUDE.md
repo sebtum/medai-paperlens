@@ -4,29 +4,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Package management uses `uv`. Activate the virtual environment before running commands, or prefix with `uv run`.
+**IMPORTANT (Windows):** Do NOT use `uv run` to invoke tools. On Windows, `uv run` triggers a venv sync on every call and can corrupt the venv with "Access is denied" errors when removing dist-info files. Always invoke tools directly via the venv:
 
-```bash
+```powershell
 # Run the API server
-uvicorn app.main:app --reload
+.\.venv\Scripts\uvicorn.exe app.main:app --reload
 
 # Lint
-ruff check .
+.\.venv\Scripts\ruff.exe check .
 
 # Format
-ruff format .
+.\.venv\Scripts\ruff.exe format .
 
 # Type check
-mypy .
+.\.venv\Scripts\mypy.exe app/
 
 # Run all tests
-pytest
+.\.venv\Scripts\pytest.exe tests/
 
 # Run a single test file
-pytest tests/test_health.py
+.\.venv\Scripts\pytest.exe tests/test_health.py
 
 # Run a single test by name
-pytest tests/test_health.py::test_health_ok
+.\.venv\Scripts\pytest.exe tests/test_health.py::test_health_ok
+```
+
+If the venv ever appears broken (ImportError, package at "unknown location"), fix it with pip `--ignore-installed --no-deps` rather than `uv run`:
+
+```powershell
+.\.venv\Scripts\pip.exe install --ignore-installed --no-deps "<package>==<version>"
 ```
 
 ## Architecture
