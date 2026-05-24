@@ -1,13 +1,20 @@
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
+from qdrant_client import QdrantClient
+from sentence_transformers import SentenceTransformer
 
 from app.core.exceptions import UnsafeQueryError
 from app.models.query import QueryRequest, QueryResponse
+from app.retrieval.client import get_client
+from app.retrieval.embedding import embed_async, get_model
+from app.retrieval.search import search
 
 router = APIRouter()
 
-# Phrases that indicate personal medical advice requests, not research questions.
-# Research questions about AI in medicine ("How accurate is AI at diagnosing cancer?")
-# are safe; requests for personal guidance ("my symptoms", "should I take") are not.
+# Phrase-pattern safety filter — interim placeholder until Phase 4 replaces this
+# with a proper classifier (Llama Guard / NeMo Guardrails + Ollama).
+# Catches personal-advice patterns; research questions about AI in medicine are allowed.
 _UNSAFE_PATTERNS: frozenset[str] = frozenset({
     "diagnose me",
     "my symptoms",
@@ -31,13 +38,22 @@ def _is_unsafe(question: str) -> bool:
 
 
 @router.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest) -> QueryResponse:
+async def query(
+    request: QueryRequest,
+    client: Annotated[QdrantClient, Depends(get_client)],
+    model: Annotated[SentenceTransformer, Depends(get_model)],
+) -> QueryResponse:
     if _is_unsafe(request.question):
         raise UnsafeQueryError(request.question)
+
+    vector = await embed_async(request.question, model)
+    citations, confidence = search(vector, client, top_k=5)
+    grounded = len(citations) > 0
+
     return QueryResponse(
-        answer="Retrieval pipeline not yet implemented.",
-        citations=[],
-        confidence=0.0,
-        grounded=False,
-        debug={"route": "stub"},
+        answer=citations[0].excerpt if grounded else "No relevant papers found.",
+        citations=citations,
+        confidence=confidence,
+        grounded=grounded,
+        debug={"route": "retrieval"},
     )

@@ -1,0 +1,21 @@
+{
+  "title": "Towards a Visual-Language Foundation Model for Computational Pathology",
+  "authors": [
+    "Lu, Ming Y.",
+    "Chen, Bowen",
+    "Williamson, Drew F. K.",
+    "Chen, Richard J.",
+    "Liang, Ivy",
+    "Ding, Tong",
+    "Jaume, Guillaume",
+    "Odintsov, Igor",
+    "Zhang, Andrew",
+    "Le, Long Phi",
+    "Gerber, Georg",
+    "Parwani, Anil V.",
+    "Mahmood, Faisal"
+  ],
+  "year": 2023,
+  "doi": "10.1038/s41591-024-02856-4",
+  "abstract": "The vast majority of artificial intelligence (AI) models for computational pathology (CPath) are trained in a supervised manner on datasets with restricted access, and hence may not generalize to new tasks or unseen data. Here we present CONCH (CONtrastive learning from Captions for Histopathology), a vision-language foundation model for CPath developed using diverse sources of histopathology images, biomedical text, and over 1.17 million image-caption pairs via task-agnostic pretraining. Evaluated on a suite of 14 diverse benchmarks ranging from patch-level to slide-level tasks including classification, segmentation, captioning, text-to-image and image-to-text retrieval, CONCH represents a substantial improvement over prior art and enables machine learning-based workflows requiring minimal or no further supervised fine-tuning. To facilitate further research in CPath, we release CONCH under a research-use license."
+}

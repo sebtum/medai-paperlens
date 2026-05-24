@@ -1,0 +1,25 @@
+{
+  "title": "PathAlign: A vision-language model for whole slide images in histopathology",
+  "authors": [
+    "Ahmed, Faruk",
+    "Sellergren, Andrew",
+    "Yang, Lin",
+    "Xu, Shawn",
+    "Babenko, Boris",
+    "Ward, Abbi",
+    "Olson, Niels",
+    "Mohtashamian, Arash",
+    "Matias, Yossi",
+    "Corrado, Greg S.",
+    "Duong, Quang",
+    "Webster, Dale R.",
+    "Shetty, Shravya",
+    "Golden, Daniel",
+    "Liu, Yun",
+    "Steiner, David F.",
+    "Wulczyn, Ellery"
+  ],
+  "year": 2024,
+  "doi": "10.48550/arXiv.2406.19578",
+  "abstract": "Microscopic interpretation of histopathology images underlies many important diagnostic and treatment decisions. While advances in vision-language modeling raise new opportunities for analysis of such images, the gigapixel-scale size of whole slide images (WSIs) introduces unique challenges. Additionally, pathology reports simultaneously highlight key findings from small regions while also aggregating interpretation across multiple slides, often making it difficult to create robust image-text pairs. As such, pathology reports remain a largely untapped source of supervision in computational pathology, with most efforts relying on region-of-interest annotations or self-supervision at the patch-level. In this work, we develop a vision-language model based on the BLIP-2 framework using WSIs paired with curated text from pathology reports. This enables applications utilizing a shared image-text embedding space, such as text or image retrieval for finding cases of interest, as well as integration of the WSI encoder with a frozen large language model (LLM) for WSI-based generative text capabilities such as report generation or AI-in-the-loop interactions. We utilize a de-identified dataset of over 350,000 WSIs and diagnostic text pairs, spanning a wide range of diagnoses, procedure types, and tissue types. Model-generated text for WSIs was rated by pathologists as accurate, without clinically significant error or omission, for 78% of WSIs on average. This work demonstrates exciting potential capabilities for language-aligned WSI embeddings."
+}

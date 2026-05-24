@@ -1,0 +1,18 @@
+{
+  "title": "A vision-language foundation model for the generation of realistic chest X-ray images",
+  "authors": [
+    "Bluethgen, Christian",
+    "Chambon, Pierre",
+    "Delbrouck, Jean-Benoit",
+    "van der Sluijs, Rogier",
+    "Połacin, Małgorzata",
+    "Zambrano Chaves, Juan Manuel",
+    "Abraham, Tanishq Mathew",
+    "Purohit, Shivanshu",
+    "Langlotz, Curtis P.",
+    "Chaudhari, Akshay S."
+  ],
+  "year": 2024,
+  "doi": "10.1038/s41551-024-01246-y",
+  "abstract": "The paucity of high-quality medical imaging datasets could be mitigated by machine learning models that generate compositionally diverse images that faithfully represent medical concepts and pathologies. However, large vision-language models are trained on natural images, and the diversity distribution of the generated images substantially differs from that of medical images. Moreover, medical language involves specific and semantically rich vocabulary. Here we describe a domain-adaptation strategy for large vision-language models that overcomes distributional shifts. Specifically, by leveraging publicly available datasets of chest X-ray images and the corresponding radiology reports, we adapted a latent diffusion model pre-trained on pairs of natural images and text descriptors to generate diverse and visually plausible synthetic chest X-ray images (as confirmed by board-certified radiologists) whose appearance can be controlled with free-form medical text prompts. The domain-adaptation strategy for the text-conditioned synthesis of medical images can be used to augment training datasets and is a viable alternative to the sharing of real medical images for model training and fine-tuning."
+}
