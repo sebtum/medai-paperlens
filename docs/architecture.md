@@ -68,8 +68,7 @@ FastAPI Backend
 Constrained Agentic RAG Workflow
  ├── Query Classifier
  ├── Query Rewriter
- ├── Paper Retriever
- ├── Evidence Extractor
+ ├── Paper Retriever  (fills citations + evidence)
  ├── Answer Generator
  └── Grounding Validator
  ↓
@@ -116,7 +115,6 @@ The MVP uses explicit workflow steps instead of a fully autonomous agent.
 classify_query
  → rewrite_query
  → retrieve_papers
- → extract_evidence
  → generate_answer
  → validate_grounding
  → return_response

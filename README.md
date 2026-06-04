@@ -28,8 +28,7 @@ This project does not provide:
 User question  
 → query classifier  
 → query rewriter  
-→ paper retriever  
-→ evidence extractor  
+→ paper retriever (fills citations + evidence)  
 → answer generator  
 → grounding validator  
 → cited summary

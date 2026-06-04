@@ -2,7 +2,7 @@ import logging
 
 import numpy as np
 import numpy.typing as npt
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 
 from app.models.query import Citation
 from app.retrieval.ingestion import COLLECTION_NAME
@@ -10,12 +10,12 @@ from app.retrieval.ingestion import COLLECTION_NAME
 logger = logging.getLogger(__name__)
 
 
-def search(
+async def search(
     vector: npt.NDArray[np.float32],
-    client: QdrantClient,
+    client: AsyncQdrantClient,
     top_k: int = 5,
 ) -> tuple[list[Citation], float]:
-    results = client.query_points(
+    results = await client.query_points(
         collection_name=COLLECTION_NAME,
         query=vector,
         limit=top_k,

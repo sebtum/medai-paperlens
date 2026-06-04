@@ -1,11 +1,22 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.api.routes.health import router as health_router
 from app.api.routes.query import router as query_router
 from app.core.exceptions import UnsafeQueryError
+from app.llm.ollama import make_ollama_client
 
-app = FastAPI(title="MedAI PaperLens", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with make_ollama_client() as ollama:
+        app.state.ollama = ollama
+        yield
+
+
+app = FastAPI(title="MedAI PaperLens", version="0.1.0", lifespan=lifespan)
 
 app.include_router(health_router)
 app.include_router(query_router)

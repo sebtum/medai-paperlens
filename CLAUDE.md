@@ -55,8 +55,7 @@ MedAI PaperLens is a local-first AI engineering project for medical AI literatur
 Streamlit UI → FastAPI Backend → Constrained Agentic RAG Workflow
                                    ├── Query Classifier
                                    ├── Query Rewriter
-                                   ├── Paper Retriever   (Qdrant)
-                                   ├── Evidence Extractor
+                                   ├── Paper Retriever   (Qdrant, fills citations + evidence)
                                    ├── Answer Generator  (Ollama, local-first)
                                    └── Grounding Validator
                                  → Citation-grounded response
@@ -109,7 +108,7 @@ Tests use `httpx.AsyncClient` with `ASGITransport` (in-process, no running serve
 ## Coding standards
 
 - Type hints are mandatory on all shared interfaces.
-- Use domain-driven names: `evidence_extractor`, `grounding_validator`, not generic utilities.
+- Use domain-driven names: `query_rewriter`, `grounding_validator`, not generic utilities.
 - Do not add LangChain or heavy frameworks without explicit approval.
 - Naming: `snake_case` for functions/modules, `PascalCase` for classes.
 - Python version: 3.14 (see `.python-version`).

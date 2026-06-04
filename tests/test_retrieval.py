@@ -1,15 +1,17 @@
 import json
 from collections.abc import AsyncGenerator
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
+from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 from qdrant_client.models import CollectionDescription, CollectionsResponse
 
+from app.llm.ollama import get_ollama_client
 from app.main import app
-from app.retrieval.client import get_client
-from app.retrieval.embedding import embed, get_model
+from app.retrieval.client import get_async_client
+from app.retrieval.embedding import embed, get_embedding_provider
 from app.retrieval.ingestion import COLLECTION_NAME, VECTOR_DIM, ingest
 from app.retrieval.search import search
 
@@ -26,6 +28,13 @@ def mock_qdrant() -> MagicMock:
 
 
 @pytest.fixture
+def async_qdrant() -> AsyncMock:
+    client = AsyncMock()
+    client.query_points.return_value.points = []
+    return client
+
+
+@pytest.fixture
 def mock_model() -> MagicMock:
     model = MagicMock()
     model.encode.return_value = np.zeros(VECTOR_DIM, dtype=np.float32)
@@ -33,15 +42,28 @@ def mock_model() -> MagicMock:
 
 
 @pytest.fixture
+def mock_ollama() -> AsyncMock:
+    ollama = AsyncMock()
+    ollama.generate.return_value = "Mocked answer."
+    return ollama
+
+
+@pytest.fixture
 async def http_client(
-    mock_qdrant: MagicMock, mock_model: MagicMock
+    async_qdrant: AsyncMock, mock_ollama: AsyncMock
 ) -> AsyncGenerator[AsyncClient]:
-    app.dependency_overrides[get_client] = lambda: mock_qdrant
-    app.dependency_overrides[get_model] = lambda: mock_model
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+    mock_provider = AsyncMock()
+    mock_provider.embed.return_value = np.zeros(VECTOR_DIM, dtype=np.float32)
+
+    app.dependency_overrides[get_async_client] = lambda: async_qdrant
+    app.dependency_overrides[get_embedding_provider] = lambda: mock_provider
+    app.dependency_overrides[get_ollama_client] = lambda: mock_ollama
+
+    async with LifespanManager(app) as manager, AsyncClient(
+        transport=ASGITransport(app=manager.app), base_url="http://test"
     ) as client:
         yield client
+
     app.dependency_overrides.clear()
 
 
@@ -152,8 +174,10 @@ class TestSearch:
         point.id = point_id
         return point
 
-    def test_returns_citations_and_confidence(self, mock_qdrant: MagicMock) -> None:
-        mock_qdrant.query_points.return_value.points = [
+    async def test_returns_citations_and_confidence(
+        self, async_qdrant: AsyncMock
+    ) -> None:
+        async_qdrant.query_points.return_value.points = [
             self._make_point(
                 {
                     "title": "VLM Paper",
@@ -167,33 +191,33 @@ class TestSearch:
         ]
         vector = np.zeros(VECTOR_DIM, dtype=np.float32)
 
-        citations, confidence = search(vector, mock_qdrant, top_k=5)
+        citations, confidence = await search(vector, async_qdrant, top_k=5)
 
         assert len(citations) == 1
         assert citations[0].title == "VLM Paper"
         assert citations[0].year == 2024
         assert confidence == 0.91
 
-    def test_empty_results_return_zero_confidence(
-        self, mock_qdrant: MagicMock
+    async def test_empty_results_return_zero_confidence(
+        self, async_qdrant: AsyncMock
     ) -> None:
-        mock_qdrant.query_points.return_value.points = []
+        async_qdrant.query_points.return_value.points = []
         vector = np.zeros(VECTOR_DIM, dtype=np.float32)
 
-        citations, confidence = search(vector, mock_qdrant)
+        citations, confidence = await search(vector, async_qdrant)
 
         assert citations == []
         assert confidence == 0.0
 
-    def test_skips_malformed_payload(self, mock_qdrant: MagicMock) -> None:
-        mock_qdrant.query_points.return_value.points = [
+    async def test_skips_malformed_payload(self, async_qdrant: AsyncMock) -> None:
+        async_qdrant.query_points.return_value.points = [
             self._make_point(
                 {"title": "Bad", "authors": [], "year": "not-an-int", "text": "X"}
             ),
         ]
         vector = np.zeros(VECTOR_DIM, dtype=np.float32)
 
-        citations, _ = search(vector, mock_qdrant)
+        citations, _ = await search(vector, async_qdrant)
         assert citations == []
 
 
@@ -211,9 +235,9 @@ class TestQueryRoute:
         return point
 
     async def test_returns_citations_when_results_found(
-        self, http_client: AsyncClient, mock_qdrant: MagicMock
+        self, http_client: AsyncClient, async_qdrant: AsyncMock
     ) -> None:
-        mock_qdrant.query_points.return_value.points = [
+        async_qdrant.query_points.return_value.points = [
             self._make_point(
                 {
                     "title": "Radiology AI",
@@ -235,14 +259,12 @@ class TestQueryRoute:
         assert data["grounded"] is True
         assert data["debug"]["route"] == "retrieval"
         assert len(data["citations"]) == 1
-        assert data["answer"] == "AI in radiology."
+        assert isinstance(data["answer"], str) and data["answer"]
         assert data["confidence"] == 0.88
 
     async def test_returns_ungrounded_when_no_results(
-        self, http_client: AsyncClient, mock_qdrant: MagicMock
+        self, http_client: AsyncClient
     ) -> None:
-        mock_qdrant.query_points.return_value.points = []
-
         response = await http_client.post(
             "/query", json={"question": "What is quantum computing?"}
         )

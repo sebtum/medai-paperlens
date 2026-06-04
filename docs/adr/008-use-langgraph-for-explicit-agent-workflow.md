@@ -12,8 +12,7 @@ The workflow includes multiple explicit steps:
 
 - query classification
 - query rewriting
-- retrieval
-- evidence extraction
+- retrieval (fills citations + evidence)
 - answer generation
 - grounding validation
 - optional one-step retry

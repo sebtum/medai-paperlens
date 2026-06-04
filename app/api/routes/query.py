@@ -1,59 +1,42 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from qdrant_client import QdrantClient
-from sentence_transformers import SentenceTransformer
+from qdrant_client import AsyncQdrantClient
 
-from app.core.exceptions import UnsafeQueryError
+from app.llm.base import LlmProvider
+from app.llm.ollama import get_ollama_client
 from app.models.query import QueryRequest, QueryResponse
-from app.retrieval.client import get_client
-from app.retrieval.embedding import embed_async, get_model
-from app.retrieval.search import search
+from app.retrieval.client import get_async_client
+from app.retrieval.embedding import EmbeddingProvider, get_embedding_provider
+from app.workflow.graph import build_workflow
+from app.workflow.state import WorkflowState
 
 router = APIRouter()
-
-# Phrase-pattern safety filter — interim placeholder until Phase 4 replaces this
-# with a proper classifier (Llama Guard / NeMo Guardrails + Ollama).
-# Catches personal-advice patterns; research questions about AI in medicine are allowed.
-_UNSAFE_PATTERNS: frozenset[str] = frozenset({
-    "diagnose me",
-    "my symptoms",
-    "should i take",
-    "can i take",
-    "prescribe me",
-    "my prescription",
-    "medical advice",
-    "treat me",
-    "my condition",
-    "my illness",
-    "my disease",
-    "am i sick",
-    "i have been diagnosed",
-})
-
-
-def _is_unsafe(question: str) -> bool:
-    lower = question.lower()
-    return any(pattern in lower for pattern in _UNSAFE_PATTERNS)
 
 
 @router.post("/query", response_model=QueryResponse)
 async def query(
     request: QueryRequest,
-    client: Annotated[QdrantClient, Depends(get_client)],
-    model: Annotated[SentenceTransformer, Depends(get_model)],
+    client: Annotated[AsyncQdrantClient, Depends(get_async_client)],
+    provider: Annotated[EmbeddingProvider, Depends(get_embedding_provider)],
+    ollama: Annotated[LlmProvider, Depends(get_ollama_client)],
 ) -> QueryResponse:
-    if _is_unsafe(request.question):
-        raise UnsafeQueryError(request.question)
-
-    vector = await embed_async(request.question, model)
-    citations, confidence = search(vector, client, top_k=5)
-    grounded = len(citations) > 0
-
+    workflow = build_workflow(client, provider, ollama)
+    initial: WorkflowState = {
+        "question": request.question,
+        "rewritten": request.question,
+        "is_unsafe": False,
+        "citations": [],
+        "confidence": 0.0,
+        "answer": "",
+        "grounded": False,
+        "route": "",
+    }
+    state = await workflow.ainvoke(initial)
     return QueryResponse(
-        answer=citations[0].excerpt if grounded else "No relevant papers found.",
-        citations=citations,
-        confidence=confidence,
-        grounded=grounded,
-        debug={"route": "retrieval"},
+        answer=state["answer"],
+        citations=state["citations"],
+        confidence=state["confidence"],
+        grounded=state["grounded"],
+        debug={"route": state["route"]},
     )

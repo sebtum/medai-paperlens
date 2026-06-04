@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.136.1",
+    "httpx>=0.28.1",
     "idna>=3.15",       # pinned above CVE-2026-45409
+    "langgraph>=0.4.0",
     "qdrant-client>=1.14.0",
     "sentence-transformers>=3.4.0",
     "starlette>=1.0.1", # pinned above PYSEC-2026-161 (transitive via fastapi)
@@ -15,8 +17,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "asgi-lifespan>=2.1.0",
     "bandit>=1.8.0",          # security linter: detects vulnerabilities in Python code (eval, shell injection, hardcoded secrets...)
-    "httpx>=0.28.1",
     "mypy>=1.20.2",
     "pip-audit>=2.9.0",       # dependency scanner: flags packages with known CVEs from PyPI Advisory Database
     "pytest>=9.0.3",
