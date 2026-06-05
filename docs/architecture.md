@@ -61,25 +61,25 @@ These are excluded to keep the project safe, reproducible, and achievable within
 ```text
 User
  ↓
-Streamlit UI
+Streamlit UI  [planned]
  ↓
 FastAPI Backend
  ↓
-Constrained Agentic RAG Workflow
- ├── Query Classifier
- ├── Query Rewriter
- ├── Paper Retriever  (fills citations + evidence)
- ├── Answer Generator
- └── Grounding Validator
+LangGraph Workflow
+ ├── classify_node   — phrase-pattern safety filter
+ ├── rewrite_node    — Ollama-backed query rewriter (falls back to original on error)
+ ├── retrieve_node   — Qdrant vector search over paper corpus
+ ├── generate_node   — Ollama LLM synthesis over retrieved evidence
+ └── validate_node   — grounding check (citations present + answer non-empty)
  ↓
 Citation-grounded Research Summary
 ```
 
 ## 5. Core Components
 
-### Streamlit UI
+### Streamlit UI (planned — Phase 5)
 
-Provides a lightweight demo interface.
+Will provide a lightweight demo interface.
 
 Responsibilities:
 
@@ -87,13 +87,13 @@ Responsibilities:
 - call FastAPI backend
 - display answer, citations, confidence, and grounding status
 
-The UI should not contain core business logic.
+The UI must not contain core business logic.
 
 ### FastAPI Backend
 
 Exposes the system through HTTP endpoints.
 
-Initial endpoints:
+Endpoints:
 
 ```text
 GET /health
@@ -103,59 +103,48 @@ POST /query
 Responsibilities:
 
 - validate requests
-- call the RAG workflow
-- return structured responses
-- keep UI and backend separated
+- manage Ollama client lifespan (async context manager via `app.state.ollama`)
+- build and invoke the LangGraph workflow
+- return structured `QueryResponse`
 
-### Constrained Agentic RAG Workflow
+### LangGraph Workflow
 
-The MVP uses explicit workflow steps instead of a fully autonomous agent.
+Uses explicit, named nodes instead of a fully autonomous agent.
 
 ```text
-classify_query
- → rewrite_query
- → retrieve_papers
- → generate_answer
- → validate_grounding
- → return_response
+START → classify_node
+  ↓ (unsafe) → END  [returns refusal, grounded=false]
+  ↓ (safe)   → rewrite_node → retrieve_node → generate_node → validate_node → END
 ```
 
-A one-step retry may be added later if grounding is weak.
+State is a `WorkflowState` TypedDict passed between nodes.
 
 ### Retrieval Layer
 
-The retrieval layer searches a small controlled corpus of public medical AI papers or abstracts.
-
-Planned stack:
+Searches a controlled corpus of 10 public medical AI papers.
 
 ```text
-documents
- → chunking
- → embeddings
- → Qdrant
- → top-k retrieval
+question
+ → embed via SentenceTransformer (all-MiniLM-L6-v2 default)
+ → Qdrant top-k cosine search
+ → list[Citation] + confidence score
 ```
 
-Retrieved chunks must include citation metadata.
+Retrieved chunks include citation metadata (title, source URL, excerpt).
 
 ### LLM Provider
 
-Ollama is the default local LLM provider.
+`LlmProvider` is a Protocol with `generate()` and `generate_structured()`.
 
-External providers may be added later behind an interface, but they must be disabled by default.
+`OllamaClient` is the only concrete implementation. Default model: `qwen2.5:3b` (configurable via `OLLAMA_MODEL`).
 
-Tests should use a mock provider instead of requiring a live LLM.
+External providers can be added behind the protocol but must be opt-in and disabled by default.
+
+Tests use a mock provider — no live Ollama required in the test suite.
 
 ### Grounding Validator
 
-Checks whether generated answers are supported by retrieved evidence.
-
-Responsibilities:
-
-- verify citations exist
-- flag unsupported claims
-- lower confidence when evidence is weak
-- prevent hallucinated paper details from being presented as facts
+`validate_node` sets `grounded = True` when citations are present and the answer is non-empty. A weak-grounding retry path may be added in a later phase.
 
 ## 6. API Contract
 
@@ -177,7 +166,7 @@ Request:
 }
 ```
 
-Planned response:
+Response:
 
 ```json
 {
@@ -187,15 +176,13 @@ Planned response:
       "title": "...",
       "source_url": "...",
       "chunk_id": "...",
-      "evidence": "..."
+      "excerpt": "..."
     }
   ],
-  "confidence": "low|medium|high",
+  "confidence": 0.87,
   "grounded": true,
   "debug": {
-    "route": "paper_search",
-    "rewritten_query": "...",
-    "retrieved_chunks": 5
+    "route": "retrieval"
   }
 }
 ```
@@ -215,9 +202,9 @@ Example unsafe response:
 
 ```json
 {
-  "answer": "This system does not provide diagnosis, treatment recommendations, or patient-specific medical advice.",
+  "answer": "Literature summaries only — no medical advice.",
   "citations": [],
-  "confidence": "low",
+  "confidence": 0.0,
   "grounded": false,
   "debug": {
     "route": "unsafe_medical_advice"

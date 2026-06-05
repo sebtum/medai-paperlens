@@ -49,48 +49,64 @@ If the venv ever appears broken (ImportError, package at "unknown location"), fi
 
 MedAI PaperLens is a local-first AI engineering project for medical AI literature intelligence — not a clinical tool. It accepts research questions and returns citation-grounded summaries over a constrained corpus of public medical AI papers.
 
-### Request flow (planned)
+### Request flow
 
 ```
-Streamlit UI → FastAPI Backend → Constrained Agentic RAG Workflow
-                                   ├── Query Classifier
-                                   ├── Query Rewriter
-                                   ├── Paper Retriever   (Qdrant, fills citations + evidence)
-                                   ├── Answer Generator  (Ollama, local-first)
-                                   └── Grounding Validator
-                                 → Citation-grounded response
+Streamlit UI (planned) → FastAPI Backend → LangGraph Workflow
+                                             ├── classify_node   (phrase-pattern safety filter)
+                                             ├── rewrite_node    (Ollama query rewriter)
+                                             ├── retrieve_node   (Qdrant vector search)
+                                             ├── generate_node   (Ollama LLM synthesis)
+                                             └── validate_node   (grounding check)
+                                           → Citation-grounded response
 ```
 
-### Current implementation (Phase 3 complete)
+### Current implementation (Phase 4 complete)
 
-- `app/main.py` — FastAPI app factory; mounts `health_router` and `query_router`; registers `UnsafeQueryError` exception handler.
+**API layer**
+- `app/main.py` — FastAPI app factory; manages `OllamaClient` lifespan; mounts `health_router` and `query_router`; registers `UnsafeQueryError` exception handler.
 - `app/api/routes/health.py` — `GET /health` endpoint.
-- `app/api/routes/query.py` — `POST /query`. Checks `_is_unsafe()` (phrase-pattern placeholder — Phase 4 replaces with classifier/Llama Guard). Safe queries run `embed_async → search`, return grounded citations with real Qdrant confidence scores.
+- `app/api/routes/query.py` — `POST /query`. Builds and invokes the LangGraph workflow, returns `QueryResponse`.
 - `app/core/exceptions.py` — `UnsafeQueryError`.
 - `app/models/query.py` — `QueryRequest`, `Citation`, `QueryResponse`.
-- `app/retrieval/client.py` — `get_client()`: `@lru_cache` singleton for `QdrantClient`, reads `QDRANT_URL` from env.
-- `app/retrieval/embedding.py` — `get_model()`: `@lru_cache` singleton for `SentenceTransformer` (reads `EMBEDDING_MODEL` env var). `embed()` returns `np.ndarray`. `embed_async()` offloads to threadpool via `asyncio.to_thread`.
+
+**LLM layer**
+- `app/llm/base.py` — `LlmProvider` Protocol with `generate()` and `generate_structured()`.
+- `app/llm/ollama.py` — `OllamaClient`: async context manager; `generate()` calls `/api/generate` (string prompt) or `/api/chat` (message list); default model `qwen2.5:3b` via `OLLAMA_MODEL` env var.
+
+**Workflow layer** (LangGraph)
+- `app/workflow/state.py` — `WorkflowState` TypedDict: `question`, `rewritten`, `is_unsafe`, `citations`, `confidence`, `answer`, `grounded`, `route`.
+- `app/workflow/graph.py` — `build_workflow(client, provider, llm)`: compiles the StateGraph; routes unsafe queries directly to END, safe queries through rewrite → retrieve → generate → validate.
+- `app/workflow/classify.py` — `classify_node`: phrase-pattern safety filter (frozenset of unsafe patterns); sets `is_unsafe` / `route`.
+- `app/workflow/rewrite.py` — `make_rewrite_node(llm)`: Ollama-backed query rewriter; falls back to original question on LLM error.
+- `app/workflow/retrieve.py` — `make_retrieve_node(client, provider)`: embeds rewritten query, runs Qdrant search, populates `citations` and `confidence`.
+- `app/workflow/generate.py` — `make_generate_node(llm)`: synthesises answer from evidence via Ollama; returns error message on LLM failure.
+- `app/workflow/validate.py` — `validate_node`: sets `grounded = True` when citations exist and answer is non-empty.
+
+**Retrieval layer**
+- `app/retrieval/client.py` — `get_async_client()`: FastAPI dependency for `AsyncQdrantClient`, reads `QDRANT_URL` from env.
+- `app/retrieval/embedding.py` — `EmbeddingProvider` Protocol; `get_embedding_provider()` FastAPI dependency; `SentenceTransformer` singleton (reads `EMBEDDING_MODEL` env var); `embed_async()` offloads to threadpool.
 - `app/retrieval/ingestion.py` — `ingest(papers_dir, client, model, *, overwrite)`: validates abstracts, processes in batches of 32, upserts to Qdrant collection `papers`.
-- `app/retrieval/search.py` — `search(vector, client, top_k)`: queries Qdrant, parses payloads defensively, returns `(list[Citation], float)` where float is the top cosine score.
-- `scripts/ingest.py` — CLI ingestion script; `--papers-dir` / `PAPERS_DIR` env var; `--overwrite` flag with production warning; `sys.exit(1)` on failure.
+- `app/retrieval/search.py` — `search(vector, client, top_k)`: queries Qdrant, parses payloads defensively, returns `(list[Citation], float)`.
+- `scripts/ingest.py` — CLI ingestion script; `--papers-dir` / `PAPERS_DIR` env var; `--overwrite` flag; `sys.exit(1)` on failure.
 - `data/papers/*.json` — 10 curated public medical-AI papers (corpus).
 
 ### Key architectural decisions
 
-- **Constrained agentic RAG, not a full autonomous agent** — explicit workflow nodes with a single optional retry (ADR-0001). Do not implement open-ended multi-step web research.
+- **Constrained agentic RAG, not a full autonomous agent** — explicit workflow nodes, no open-ended multi-step web research (ADR-0001).
 - **FastAPI backend, Streamlit UI** — UI holds no business logic; backend owns the RAG workflow (ADR-0004, ADR-0006).
 - **Qdrant** for vector search over the paper corpus (ADR-0005).
 - **Ollama** is the default and only required LLM provider. External providers must be opt-in and disabled by default (ADR-007).
+- **LangGraph** is the workflow orchestrator (ADR-008).
 - **Docker Compose** before Kubernetes — do not add K8s until Compose is working (ADR-0002).
-- **LangGraph** is the planned workflow orchestrator — do not add it until basic retrieval works (ADR-008).
 
 ### Build order constraint
 
 Do not add the next layer until the current one is stable:
 1. ~~FastAPI with `/health` and `/query` endpoints~~ ✓
 2. ~~Local retrieval against Qdrant corpus~~ ✓
-3. LangGraph workflow nodes  ← next
-4. Streamlit UI
+3. ~~LangGraph workflow nodes + Ollama LLM synthesis~~ ✓
+4. Streamlit UI  ← next
 5. Docker Compose for full-stack local run
 
 ### API contract

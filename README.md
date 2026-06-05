@@ -1,8 +1,8 @@
 # MedAI PaperLens
 
-MedAI PaperLens is an AI engineering portfolio project for medical AI literature intelligence.
+MedAI PaperLens is a local-first AI engineering portfolio project for medical AI literature intelligence.
 
-It helps users explore medical AI papers by retrieving relevant literature, extracting structured evidence, comparing methods, and generating citation-grounded summaries.
+It accepts research questions and returns citation-grounded summaries over a constrained corpus of public medical AI papers.
 
 ## Scope
 
@@ -23,29 +23,85 @@ This project does not provide:
 - patient-specific medical advice
 - clinical decision support
 
-## Planned Architecture
+## Architecture
 
-User question  
-→ query classifier  
-→ query rewriter  
-→ paper retriever (fills citations + evidence)  
-→ answer generator  
-→ grounding validator  
-→ cited summary
+```
+Streamlit UI (planned)
+ ↓
+FastAPI Backend
+ ↓
+LangGraph Workflow
+ ├── Query Classifier   — phrase-pattern safety filter
+ ├── Query Rewriter     — Ollama-backed retrieval query improvement
+ ├── Paper Retriever    — Qdrant vector search, fills citations + evidence
+ ├── Answer Generator   — Ollama LLM synthesis over retrieved evidence
+ └── Grounding Validator — checks citations exist and answer is non-empty
+ ↓
+Citation-grounded Research Summary
+```
 
 ## Tech Stack
 
-- Python
+- Python 3.14
 - FastAPI
-- Streamlit
-- Qdrant
 - LangGraph
-- Ollama
-- Docker Compose
-- GitHub Actions
-- pytest
-- ruff
+- Qdrant
+- Ollama (local LLM, default model: `qwen2.5:3b`)
+- sentence-transformers (embeddings)
+- Streamlit (planned)
+- Docker Compose (planned)
+- GitHub Actions CI
+- pytest / ruff / mypy / bandit / pip-audit
 
 ## Status
 
-Early development.
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1 | FastAPI `/health` + `/query` endpoints | ✅ Done |
+| 2 | Query API contract + unsafe-query refusal | ✅ Done |
+| 3 | Qdrant retrieval layer | ✅ Done |
+| 4 | LangGraph workflow + Ollama LLM synthesis | ✅ Done |
+| 5 | Streamlit UI | Planned |
+| 6 | Docker Compose full-stack | Planned |
+
+## Running locally
+
+**Requirements:** Qdrant and Ollama must be running locally.
+
+```powershell
+# Start the API server
+.\.venv\Scripts\uvicorn.exe app.main:app --reload
+
+# Ingest papers into Qdrant
+.\.venv\Scripts\python.exe scripts/ingest.py
+
+# Run tests
+.\.venv\Scripts\pytest.exe tests/
+```
+
+Environment variables (see `.env.example`):
+
+```
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:3b
+QDRANT_URL=http://localhost:6333
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+```
+
+## API
+
+`GET /health` → `{"status": "ok"}`
+
+`POST /query` — accepts `{"question": "..."}`, returns:
+
+```json
+{
+  "answer": "...",
+  "citations": [{"title": "...", "source_url": "...", "chunk_id": "...", "excerpt": "..."}],
+  "confidence": 0.87,
+  "grounded": true,
+  "debug": {"route": "retrieval"}
+}
+```
+
+Unsafe personal-advice queries (e.g. "diagnose me", "my symptoms") return a refusal with `"grounded": false`.
