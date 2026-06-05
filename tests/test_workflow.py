@@ -6,7 +6,7 @@ from qdrant_client import AsyncQdrantClient
 from app.models.query import Citation
 from app.retrieval.ingestion import VECTOR_DIM
 from app.workflow.classify import classify_node
-from app.workflow.generate import make_generate_node, _ERROR_ANSWER
+from app.workflow.generate import _ERROR_ANSWER, make_generate_node
 from app.workflow.graph import build_workflow
 from app.workflow.state import WorkflowState
 
