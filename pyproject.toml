@@ -12,6 +12,7 @@ dependencies = [
     "qdrant-client>=1.14.0",
     "sentence-transformers>=3.4.0",
     "starlette>=1.0.1", # pinned above PYSEC-2026-161 (transitive via fastapi)
+    "python-dotenv>=1.0.0",
     "streamlit>=1.45.0",
     "uvicorn>=0.46.0",
 ]

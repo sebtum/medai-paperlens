@@ -1,3 +1,4 @@
+import contextlib
 import os
 from collections.abc import Mapping, Sequence
 from types import TracebackType
@@ -20,7 +21,9 @@ class OllamaClient:
         return self._model
 
     async def __aenter__(self) -> OllamaClient:
-        self._http = httpx.AsyncClient(timeout=60.0)
+        self._http = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=30.0, read=None, write=30.0, pool=30.0)
+        )
         return self
 
     async def __aexit__(
@@ -64,6 +67,21 @@ class OllamaClient:
             )
             response.raise_for_status()
             return str(response.json()["message"]["content"])
+
+    async def warmup(self) -> None:
+        if self._http is None:
+            return
+        with contextlib.suppress(httpx.HTTPError):
+            await self._http.post(
+                f"{self._base_url}/api/generate",
+                json={
+                    "model": self._model,
+                    "prompt": "",
+                    "stream": False,
+                    "keep_alive": -1,
+                },
+                timeout=300.0,
+            )
 
     async def is_model_warm(self) -> bool:
         if self._http is None:

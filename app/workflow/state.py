@@ -12,3 +12,4 @@ class WorkflowState(TypedDict):
     answer: str
     grounded: bool
     route: str
+    score_threshold: float

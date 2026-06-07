@@ -1,10 +1,11 @@
 from typing import Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class QueryRequest(BaseModel):
     question: str
+    score_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
 
     @field_validator("question")
     @classmethod

@@ -21,6 +21,7 @@ def _safe_state(**overrides) -> WorkflowState:
         "answer": "",
         "grounded": False,
         "route": "",
+        "score_threshold": 0.4,
     }
     base.update(overrides)  # type: ignore[typeddict-item]
     return base

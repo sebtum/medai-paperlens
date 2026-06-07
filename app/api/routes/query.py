@@ -31,6 +31,7 @@ async def query(
         "answer": "",
         "grounded": False,
         "route": "",
+        "score_threshold": request.score_threshold,
     }
     state = await workflow.ainvoke(initial)
     return QueryResponse(
@@ -38,5 +39,5 @@ async def query(
         citations=state["citations"],
         confidence=state["confidence"],
         grounded=state["grounded"],
-        debug={"route": state["route"]},
+        debug={"route": state["route"], "rewritten": state["rewritten"]},
     )

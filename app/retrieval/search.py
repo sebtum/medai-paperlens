@@ -14,11 +14,13 @@ async def search(
     vector: npt.NDArray[np.float32],
     client: AsyncQdrantClient,
     top_k: int = 5,
+    score_threshold: float = 0.4,
 ) -> tuple[list[Citation], float]:
     results = await client.query_points(
         collection_name=COLLECTION_NAME,
         query=vector,
         limit=top_k,
+        score_threshold=score_threshold,
     )
 
     citations = []
@@ -38,4 +40,8 @@ async def search(
             logger.warning("Skipping malformed result id=%s: %s", point.id, exc)
 
     confidence = float(results.points[0].score) if results.points else 0.0
+    logger.info(
+        "search: %d/%d results above threshold (best=%.2f)",
+        len(citations), top_k, confidence,
+    )
     return citations, confidence

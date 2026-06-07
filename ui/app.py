@@ -60,11 +60,15 @@ async def check_model_status() -> ModelStatus | None:
 
 async def call_query_api(
     question: str,
+    score_threshold: float = 0.4,
 ) -> tuple[QueryResult | None, str | None]:
     try:
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=30.0, read=None, write=30.0, pool=30.0)
+        ) as client:
             response = await client.post(
-                QUERY_ENDPOINT, json={"question": question}
+                QUERY_ENDPOINT,
+                json={"question": question, "score_threshold": score_threshold},
             )
             response.raise_for_status()
             return response.json(), None
@@ -85,6 +89,11 @@ def _build_spinner_text(model_status: ModelStatus | None) -> str:
         f"Model '{model_status['model']}' is loading{est_text}"
         f" — please wait…"
     )
+
+
+@st.cache_data(ttl=10)
+def _cached_backend_health() -> bool:
+    return asyncio.run(check_backend_health())
 
 
 def render_confidence_indicator(confidence: float) -> None:
@@ -143,58 +152,63 @@ def render_error(error_type: str) -> None:
         st.error("The backend returned an unexpected error. Check the server logs.")
 
 
-def main() -> None:
-    st.set_page_config(page_title="MedAI PaperLens", layout="wide")
-    st.title("MedAI PaperLens")
-    st.caption(
-        "Citation-grounded summaries over a curated corpus of medical AI papers. "
-        "Not a clinical tool — for research exploration only."
-    )
+@st.fragment(run_every=5)
+def _chat_zone() -> None:
+    status = asyncio.run(check_model_status())
 
-    if not asyncio.run(check_backend_health()):
-        st.warning(
-            "Backend is not reachable. "
-            "Start the API server before submitting queries."
+    if status is None:
+        st.warning("Cannot determine model status. Retrying…")
+        return
+
+    if not status["warm"]:
+        est = status["estimated_warmup_seconds"]
+        est_text = f" (~{est // 60} min)" if est is not None else ""
+        st.info(
+            f"Model '{status['model']}' is loading{est_text}."
+            " Chat will be available when ready."
         )
+        return
 
-    if "result" not in st.session_state:
-        st.session_state["result"] = None
-        st.session_state["error"] = None
-        st.session_state["elapsed"] = None
-
-    question = st.text_area(
-        "Research question",
-        placeholder=(
-            "e.g. What methods are used for chest X-ray classification in medical AI?"
-        ),
-        height=100,
-    )
-    submitted = st.button("Search")
+    # Model is warm — render chat form
+    st.caption(f"Model: `{status['model']}`")
+    with st.form("query_form"):
+        question = st.text_area(
+            "Research question",
+            placeholder=(
+                "e.g. What methods are used for chest X-ray classification?"
+            ),
+            height=100,
+        )
+        score_threshold = st.slider(
+            "Relevance threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.4,
+            step=0.05,
+            help=(
+                "Minimum similarity score for retrieved papers"
+                " (lower = more results, higher = stricter)"
+            ),
+        )
+        submitted = st.form_submit_button("Search")
 
     if submitted and question.strip():
-        # Reset state on every new submission
         st.session_state["result"] = None
         st.session_state["error"] = None
-        st.session_state["elapsed"] = None
-
-        model_status = asyncio.run(check_model_status())
-        spinner_text = _build_spinner_text(model_status)
-
         start = time.monotonic()
-        with st.spinner(spinner_text):
-            result, error = asyncio.run(call_query_api(question.strip()))
-        elapsed = time.monotonic() - start
-
+        with st.spinner("Querying…"):
+            result, error = asyncio.run(
+                call_query_api(question.strip(), score_threshold=score_threshold)
+            )
         st.session_state["result"] = result
         st.session_state["error"] = error
-        st.session_state["elapsed"] = elapsed
-
+        st.session_state["elapsed"] = time.monotonic() - start
     elif submitted:
         st.warning("Please enter a research question.")
 
-    result: QueryResult | None = st.session_state["result"]
-    error: str | None = st.session_state["error"]
-    elapsed: float | None = st.session_state["elapsed"]
+    result: QueryResult | None = st.session_state.get("result")
+    error: str | None = st.session_state.get("error")
+    elapsed: float | None = st.session_state.get("elapsed")
 
     if error is not None:
         render_error(error)
@@ -207,6 +221,37 @@ def main() -> None:
 
     if elapsed is not None and error != _ERR_CONNECT:
         st.caption(f"Response time: {elapsed:.1f} s")
+
+    debug_data: dict[str, Any] = (
+        result.get("debug", {}) if isinstance(result, dict) else {}
+    )
+    if debug_data:
+        route = debug_data.get("route", "unknown")
+        rewritten = debug_data.get("rewritten", "")
+        with st.expander("Debug", expanded=False):
+            st.write(f"**Route:** `{route}`")
+            if rewritten:
+                st.write(f"**Rewritten question:** {rewritten}")
+            if error:
+                st.error(f"Error type: `{error}`")
+
+
+def main() -> None:
+    st.set_page_config(page_title="MedAI PaperLens", layout="wide")
+    st.title("MedAI PaperLens")
+    st.caption(
+        "Citation-grounded summaries over a curated corpus of medical AI papers. "
+        "Not a clinical tool — for research exploration only."
+    )
+
+    if not _cached_backend_health():
+        st.error(
+            f"Backend not reachable. "
+            f"Start the API server at {API_BASE_URL} before using the app."
+        )
+        st.stop()
+
+    _chat_zone()
 
 
 if __name__ == "__main__":

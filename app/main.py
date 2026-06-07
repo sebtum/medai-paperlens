@@ -1,5 +1,8 @@
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
+import dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -9,11 +12,15 @@ from app.api.routes.query import router as query_router
 from app.core.exceptions import UnsafeQueryError
 from app.llm.ollama import make_ollama_client
 
+dotenv.load_dotenv()
+logging.getLogger("app").setLevel(logging.INFO)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with make_ollama_client() as ollama:
         app.state.ollama = ollama
+        app.state.warmup_task = asyncio.create_task(ollama.warmup())
         yield
 
 
