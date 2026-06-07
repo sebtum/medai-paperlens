@@ -29,6 +29,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 .\.venv\Scripts\python.exe scripts/ingest.py
 .\.venv\Scripts\python.exe scripts/ingest.py --overwrite   # drop and re-index
 
+# Run the Streamlit UI
+.\.venv\Scripts\streamlit.exe run ui/app.py
+
 # Run all tests
 .\.venv\Scripts\pytest.exe tests/
 
@@ -52,7 +55,7 @@ MedAI PaperLens is a local-first AI engineering project for medical AI literatur
 ### Request flow
 
 ```
-Streamlit UI (planned) → FastAPI Backend → LangGraph Workflow
+Streamlit UI → FastAPI Backend → LangGraph Workflow
                                              ├── classify_node   (phrase-pattern safety filter)
                                              ├── rewrite_node    (Ollama query rewriter)
                                              ├── retrieve_node   (Qdrant vector search)
@@ -61,7 +64,7 @@ Streamlit UI (planned) → FastAPI Backend → LangGraph Workflow
                                            → Citation-grounded response
 ```
 
-### Current implementation (Phase 4 complete)
+### Current implementation (Phase 5 complete)
 
 **API layer**
 - `app/main.py` — FastAPI app factory; manages `OllamaClient` lifespan; mounts `health_router` and `query_router`; registers `UnsafeQueryError` exception handler.
@@ -72,7 +75,7 @@ Streamlit UI (planned) → FastAPI Backend → LangGraph Workflow
 
 **LLM layer**
 - `app/llm/base.py` — `LlmProvider` Protocol with `generate()` and `generate_structured()`.
-- `app/llm/ollama.py` — `OllamaClient`: async context manager; `generate()` calls `/api/generate` (string prompt) or `/api/chat` (message list); default model `qwen2.5:3b` via `OLLAMA_MODEL` env var.
+- `app/llm/ollama.py` — `OllamaClient`: async context manager; `generate()` calls `/api/generate` (string prompt) or `/api/chat` (message list); default model `qwen3.5:4b` via `OLLAMA_MODEL` env var.
 
 **Workflow layer** (LangGraph)
 - `app/workflow/state.py` — `WorkflowState` TypedDict: `question`, `rewritten`, `is_unsafe`, `citations`, `confidence`, `answer`, `grounded`, `route`.
@@ -106,8 +109,8 @@ Do not add the next layer until the current one is stable:
 1. ~~FastAPI with `/health` and `/query` endpoints~~ ✓
 2. ~~Local retrieval against Qdrant corpus~~ ✓
 3. ~~LangGraph workflow nodes + Ollama LLM synthesis~~ ✓
-4. Streamlit UI  ← next
-5. Docker Compose for full-stack local run
+4. ~~Streamlit UI~~ ✓
+5. Docker Compose for full-stack local run  ← next
 
 ### API contract
 

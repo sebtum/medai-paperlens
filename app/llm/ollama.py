@@ -15,6 +15,10 @@ class OllamaClient:
         self._model = model
         self._http: httpx.AsyncClient | None = None
 
+    @property
+    def model(self) -> str:
+        return self._model
+
     async def __aenter__(self) -> OllamaClient:
         self._http = httpx.AsyncClient(timeout=60.0)
         return self
@@ -61,6 +65,24 @@ class OllamaClient:
             response.raise_for_status()
             return str(response.json()["message"]["content"])
 
+    async def is_model_warm(self) -> bool:
+        if self._http is None:
+            return False
+        try:
+            response = await self._http.get(f"{self._base_url}/api/ps")
+            response.raise_for_status()
+            models: list[dict[str, Any]] = response.json().get("models", [])
+            target = (
+                self._model if ":" in self._model else f"{self._model}:latest"
+            )
+            return any(
+                (n if ":" in n else f"{n}:latest") == target
+                for m in models
+                if (n := m.get("name", ""))
+            )
+        except (httpx.HTTPError, ValueError):
+            return False
+
     async def generate_structured(
         self,
         prompt: str | Sequence[Mapping[str, str]],
@@ -79,5 +101,5 @@ def get_ollama_client(request: Request) -> OllamaClient:
 
 def make_ollama_client() -> OllamaClient:
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-    model = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
+    model = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b")
     return OllamaClient(base_url, model)

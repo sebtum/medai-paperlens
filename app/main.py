@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.api.routes.health import router as health_router
+from app.api.routes.model import router as model_router
 from app.api.routes.query import router as query_router
 from app.core.exceptions import UnsafeQueryError
 from app.llm.ollama import make_ollama_client
@@ -19,6 +20,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="MedAI PaperLens", version="0.1.0", lifespan=lifespan)
 
 app.include_router(health_router)
+app.include_router(model_router, prefix="/model")
 app.include_router(query_router)
 
 
