@@ -26,7 +26,7 @@ This project does not provide:
 ## Architecture
 
 ```
-Streamlit UI (planned)
+Streamlit UI
  ↓
 FastAPI Backend
  ↓
@@ -46,9 +46,9 @@ Citation-grounded Research Summary
 - FastAPI
 - LangGraph
 - Qdrant
-- Ollama (local LLM, default model: `qwen2.5:3b`)
+- Ollama (local LLM, default model: `qwen3.5:4b`)
 - sentence-transformers (embeddings)
-- Streamlit (planned)
+- Streamlit
 - Docker Compose (planned)
 - GitHub Actions CI
 - pytest / ruff / mypy / bandit / pip-audit
@@ -61,8 +61,8 @@ Citation-grounded Research Summary
 | 2 | Query API contract + unsafe-query refusal | ✅ Done |
 | 3 | Qdrant retrieval layer | ✅ Done |
 | 4 | LangGraph workflow + Ollama LLM synthesis | ✅ Done |
-| 5 | Streamlit UI | Planned |
-| 6 | Docker Compose full-stack | Planned |
+| 5 | Streamlit UI | ✅ Done |
+| 6 | Docker Compose full-stack | Next |
 
 ## Running locally
 
@@ -71,6 +71,9 @@ Citation-grounded Research Summary
 ```powershell
 # Start the API server
 .\.venv\Scripts\uvicorn.exe app.main:app --reload
+
+# Start the Streamlit UI
+.\.venv\Scripts\streamlit.exe run ui/app.py
 
 # Ingest papers into Qdrant
 .\.venv\Scripts\python.exe scripts/ingest.py
@@ -83,7 +86,7 @@ Environment variables (see `.env.example`):
 
 ```
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:3b
+OLLAMA_MODEL=qwen3.5:4b
 QDRANT_URL=http://localhost:6333
 EMBEDDING_MODEL=all-MiniLM-L6-v2
 ```
