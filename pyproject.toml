@@ -17,6 +17,11 @@ dependencies = [
     "uvicorn>=0.46.0",
 ]
 
+[project.optional-dependencies]
+# Opt-in only (ADR-007: Ollama is the sole required LLM provider). Used by
+# scripts/llm_bench/providers.py's GeminiClient for benchmark/eval scripts.
+gemini = ["google-genai>=1.0.0"]
+
 [dependency-groups]
 dev = [
     "asgi-lifespan>=2.1.0",
