@@ -10,7 +10,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.model import router as model_router
 from app.api.routes.query import router as query_router
 from app.core.exceptions import UnsafeQueryError
-from app.llm.ollama import make_ollama_client
+from app.llm.factory import make_llm_provider
 
 dotenv.load_dotenv()
 logging.getLogger("app").setLevel(logging.INFO)
@@ -18,9 +18,9 @@ logging.getLogger("app").setLevel(logging.INFO)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with make_ollama_client() as ollama:
-        app.state.ollama = ollama
-        app.state.warmup_task = asyncio.create_task(ollama.warmup())
+    async with make_llm_provider() as llm:
+        app.state.llm = llm
+        app.state.warmup_task = asyncio.create_task(llm.warmup())
         yield
 
 

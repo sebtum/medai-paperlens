@@ -1,19 +1,19 @@
-# ADR-012: Upgrade default Ollama model to qwen3.5:4b
+# ADR-0013: Upgrade default Ollama model to qwen3.5:4b
 
 ## Status
 
-Accepted
+Superseded by ADR-0015
 
 ## Context
 
-ADR-011 selected `qwen2.5:3b` as the default model and included a follow-up:
+ADR-0011 selected `qwen2.5:3b` as the default model and included a follow-up:
 > Re-evaluate when the project reaches Docker Compose phase: if running in a container on a machine with a discrete GPU, `qwen2.5:7b` or `llama3.1:8b` may become viable defaults.
 
 Phase 5 (Docker Compose) is now underway, making this the natural re-evaluation checkpoint.
 
 A survey of available Ollama models in June 2026 shows that `qwen3.5:4b` is available at [ollama.com/library/qwen3.5](https://ollama.com/library/qwen3.5) and represents a direct generational improvement over `qwen2.5:3b` in the instruction-following workloads this project uses (query rewriting, RAG synthesis).
 
-Hardware constraints of the primary development machine remain unchanged from ADR-011:
+Hardware constraints of the primary development machine remain unchanged from ADR-0011:
 - CPU-only inference (no dedicated GPU)
 - Intel Iris Xe integrated graphics, ~8 GB available RAM
 
@@ -78,5 +78,9 @@ Negative:
 
 ## Follow-up
 
-- Add a startup log line that prints the active model name (carry-over from ADR-011).
+- Add a startup log line that prints the active model name (carry-over from ADR-0011).
 - Re-evaluate with a discrete GPU setup once Docker Compose is stable: `qwen3.5:9b` or larger may become viable defaults in that configuration.
+
+**Superseded 2026-09-15:** benchmarking (`docs/benchmarks.md`) showed `qwen3.5:4b`
+achieves only 8–9 tok/s on this hardware — well below the 10–14 tok/s estimated
+above — making it unusable for interactive use. See ADR-0015.

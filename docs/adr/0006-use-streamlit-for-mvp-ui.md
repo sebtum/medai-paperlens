@@ -1,4 +1,4 @@
-# ADR-0003: Use Streamlit for MVP UI
+# ADR-0006: Use Streamlit for MVP UI
 
 ## Status
 

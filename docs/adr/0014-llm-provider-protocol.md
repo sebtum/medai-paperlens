@@ -1,4 +1,4 @@
-# ADR-013: LlmProvider Protocol for decoupled LLM inference
+# ADR-0014: LlmProvider Protocol for decoupled LLM inference
 
 ## Status
 
@@ -88,7 +88,7 @@ Positive:
 - `generate_structured` is in the interface now; Phase 5 can implement it without
   any interface changes
 - Tests mock with `MagicMock(generate=AsyncMock(...))` — no HTTP client setup needed
-- Consistent with `EmbeddingProvider` pattern from ADR-012
+- Consistent with `EmbeddingProvider` pattern from ADR-0012
 
 Negative:
 - `**kwargs` are passed to Ollama's `options` dict; implementations may silently
@@ -100,5 +100,5 @@ Negative:
 
 - Phase 5: implement `generate_structured` in `OllamaClient` using
   `format: {"type": "json_schema", ...}` (requires Ollama ≥ 0.5).
-- See ADR-007 for the decision to use Ollama as the default provider.
-- See ADR-012 for the parallel `EmbeddingProvider` abstraction.
+- See ADR-0007 for the decision to use Ollama as the default provider.
+- See ADR-0012 for the parallel `EmbeddingProvider` abstraction.

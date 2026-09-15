@@ -1,4 +1,4 @@
-# ADR-0008: Use GitHub Actions for CI
+# ADR-0010: Use GitHub Actions for CI
 
 ## Status
 

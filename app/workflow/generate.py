@@ -9,8 +9,7 @@ logger = logging.getLogger(__name__)
 _PROMPT = (
     "You are a medical AI research assistant. "
     "Based on the following evidence from research papers, answer the question. "
-    "Do not give personal medical advice. Cite specific papers where relevant."
-    " /no_think\n\n"
+    "Do not give personal medical advice. Cite specific papers where relevant.\n\n"
     "Question: {question}\n\nEvidence:\n{evidence}\n\nAnswer:"
 )
 

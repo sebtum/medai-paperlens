@@ -10,7 +10,7 @@ _PROMPT = (
     "You are a medical literature search assistant. "
     "Rewrite the question to improve retrieval over academic paper abstracts. "
     "Make it concise and research-focused. "
-    "Return only the rewritten question, nothing else. /no_think\n\n"
+    "Return only the rewritten question, nothing else.\n\n"
     "Question: {question}\nRewritten question:"
 )
 

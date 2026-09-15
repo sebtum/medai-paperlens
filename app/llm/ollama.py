@@ -2,18 +2,20 @@ import contextlib
 import os
 from collections.abc import Mapping, Sequence
 from types import TracebackType
-from typing import Any, cast
+from typing import Any
 
 import httpx
-from fastapi import Request
 
 from app.llm.base import T
 
 
 class OllamaClient:
-    def __init__(self, base_url: str, model: str) -> None:
+    def __init__(
+        self, base_url: str, model: str, think: bool | None = None
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self._think = think
         self._http: httpx.AsyncClient | None = None
 
     @property
@@ -50,6 +52,8 @@ class OllamaClient:
                 "stream": False,
                 "options": kwargs,
             }
+            if self._think is not None:
+                payload["think"] = self._think
             response = await self._http.post(
                 f"{self._base_url}/api/generate", json=payload
             )
@@ -62,6 +66,8 @@ class OllamaClient:
                 "stream": False,
                 "options": kwargs,
             }
+            if self._think is not None:
+                payload["think"] = self._think
             response = await self._http.post(
                 f"{self._base_url}/api/chat", json=payload
             )
@@ -113,11 +119,8 @@ class OllamaClient:
         )
 
 
-def get_ollama_client(request: Request) -> OllamaClient:
-    return cast(OllamaClient, request.app.state.ollama)
-
-
 def make_ollama_client() -> OllamaClient:
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-    model = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b")
-    return OllamaClient(base_url, model)
+    model = os.environ.get("OLLAMA_MODEL", "qwen3:0.6b")
+    think = os.environ.get("OLLAMA_THINK", "false").strip().lower() == "true"
+    return OllamaClient(base_url, model, think=think)

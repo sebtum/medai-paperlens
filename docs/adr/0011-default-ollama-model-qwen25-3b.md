@@ -1,8 +1,8 @@
-# ADR-011: Use qwen2.5:3b as default Ollama model
+# ADR-0011: Use qwen2.5:3b as default Ollama model
 
 ## Status
 
-Accepted
+Superseded by ADR-0013 (later superseded again by ADR-0015)
 
 ## Context
 

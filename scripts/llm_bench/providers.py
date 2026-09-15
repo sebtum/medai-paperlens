@@ -1,66 +1,22 @@
 """LLM provider construction for benchmark/eval scripts.
 
-GeminiClient is a benchmarking-only adapter - it is never imported by app/,
-keeping Ollama the sole default provider (ADR-007). The google-genai package
-is an optional extra (see pyproject.toml `gemini` extra) and is only imported
-lazily, so this module loads fine even when it isn't installed.
+GeminiClient itself now lives in app/llm/gemini.py (ADR-0016: Gemini is an
+opt-in *application* provider, not benchmark-only). BenchGeminiClient here
+adds only the benchmark-specific generate_with_metrics() on top of it, so
+that method stays out of app/.
 """
 
 import os
-from collections.abc import Mapping, Sequence
-from types import TracebackType
 from typing import Any
 
 import httpx
 
-from app.llm.base import T
+from app.llm.gemini import GeminiClient
 from app.llm.ollama import OllamaClient
 
 
-class GeminiClient:
-    """Thin adapter over the google-genai SDK, structurally matching LlmProvider."""
-
-    def __init__(self, model: str, api_key: str | None = None) -> None:
-        self._model = model
-        self._api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
-        if not self._api_key:
-            raise RuntimeError("GEMINI_API_KEY is not set")
-        self._client: Any = None
-
-    @property
-    def model(self) -> str:
-        return self._model
-
-    async def __aenter__(self) -> GeminiClient:
-        from google import genai  # optional dep, imported lazily
-
-        self._client = genai.Client(api_key=self._api_key)
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> None:
-        self._client = None
-
-    async def generate(
-        self,
-        prompt: str | Sequence[Mapping[str, str]],
-        **kwargs: Any,
-    ) -> str:
-        if self._client is None:
-            raise RuntimeError("GeminiClient must be used as async context manager")
-        contents = (
-            prompt
-            if isinstance(prompt, str)
-            else "\n\n".join(m["content"] for m in prompt)
-        )
-        response = await self._client.aio.models.generate_content(
-            model=self._model, contents=contents
-        )
-        return str(response.text)
+class BenchGeminiClient(GeminiClient):
+    """GeminiClient plus a metrics-surfacing generate call, for benchmarking only."""
 
     async def generate_with_metrics(self, prompt: str) -> dict[str, Any]:
         """Like generate(), but also surfaces token usage for benchmarking.
@@ -84,30 +40,41 @@ class GeminiClient:
             "thinking_tokens": getattr(usage, "thoughts_token_count", None),
         }
 
-    async def generate_structured(
-        self,
-        prompt: str | Sequence[Mapping[str, str]],
-        response_model: type[T],
-        **kwargs: Any,
-    ) -> T:
-        raise NotImplementedError(
-            "generate_structured is not needed for benchmark/eval scripts."
-        )
-
 
 async def ollama_generate_with_metrics(
-    http: httpx.AsyncClient, base_url: str, model: str, prompt: str
+    http: httpx.AsyncClient,
+    base_url: str,
+    model: str,
+    prompt: str,
+    think: bool | None = None,
+    keep_alive: int = 0,
 ) -> dict[str, Any]:
     """Direct /api/generate call preserving fields OllamaClient.generate()
     discards: eval_count/eval_duration (real tokens/sec, not a char-count
     proxy) and thinking (non-empty when the model reasoned before answering,
     even though the prompt asks it not to via a plain-text '/no_think' hint
     rather than Ollama's `think` API parameter).
+
+    `think` sets Ollama's actual `think` API parameter explicitly (True/False)
+    so callers can compare it against the prompt-text '/no_think' hint alone;
+    leaving it None omits the field and falls back to the model's default.
+
+    `keep_alive` defaults to 0 (unload the model immediately after this
+    call) so benchmarking multiple models never keeps more than one
+    resident in RAM at a time - important on memory-constrained machines,
+    at the cost of a reload (counted in `latency_s`, not in the reported
+    tokens/sec, which is derived from Ollama's own generation-only
+    eval_duration) on every single call.
     """
-    response = await http.post(
-        f"{base_url}/api/generate",
-        json={"model": model, "prompt": prompt, "stream": False},
-    )
+    payload: dict[str, Any] = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "keep_alive": keep_alive,
+    }
+    if think is not None:
+        payload["think"] = think
+    response = await http.post(f"{base_url}/api/generate", json=payload)
     response.raise_for_status()
     data = response.json()
     thinking = data.get("thinking") or ""
@@ -155,6 +122,6 @@ def build_provider(spec: str) -> tuple[Any, str, str]:
         base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
         return OllamaClient(base_url, model_name), provider_name, model_name
     if provider_name == "gemini":
-        return GeminiClient(model_name), provider_name, model_name
+        return BenchGeminiClient(model_name), provider_name, model_name
 
     raise ValueError(f"Unknown provider {provider_name!r} in spec {spec!r}")

@@ -4,20 +4,20 @@ import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 
-from app.llm.ollama import get_ollama_client
+from app.llm.factory import get_llm_provider
 from app.main import app
 
 
 def _make_mock_ollama(warm: bool) -> AsyncMock:
     mock = AsyncMock()
     mock.is_model_warm.return_value = warm
-    mock._model = "qwen3.5:4b"
+    mock.model = "qwen3.5:4b"
     return mock
 
 
 @pytest.fixture
 async def warm_app():
-    app.dependency_overrides[get_ollama_client] = lambda: _make_mock_ollama(warm=True)
+    app.dependency_overrides[get_llm_provider] = lambda: _make_mock_ollama(warm=True)
     async with LifespanManager(app) as manager:
         yield manager.app
     app.dependency_overrides.clear()
@@ -25,7 +25,7 @@ async def warm_app():
 
 @pytest.fixture
 async def cold_app():
-    app.dependency_overrides[get_ollama_client] = lambda: _make_mock_ollama(warm=False)
+    app.dependency_overrides[get_llm_provider] = lambda: _make_mock_ollama(warm=False)
     async with LifespanManager(app) as manager:
         yield manager.app
     app.dependency_overrides.clear()

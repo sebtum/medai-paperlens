@@ -1,4 +1,4 @@
-# ADR-012: EmbeddingProvider Protocol for decoupled embedding inference
+# ADR-0012: EmbeddingProvider Protocol for decoupled embedding inference
 
 ## Status
 

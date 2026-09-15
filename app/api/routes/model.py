@@ -3,7 +3,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from app.llm.ollama import OllamaClient, get_ollama_client
+from app.llm.base import ModelStatusProvider
+from app.llm.factory import get_llm_provider
 
 router = APIRouter()
 
@@ -18,11 +19,11 @@ class ModelStatusResponse(BaseModel):
 
 @router.get("/status", response_model=ModelStatusResponse)
 async def model_status(
-    ollama: Annotated[OllamaClient, Depends(get_ollama_client)],
+    llm: Annotated[ModelStatusProvider, Depends(get_llm_provider)],
 ) -> ModelStatusResponse:
-    warm = await ollama.is_model_warm()
+    warm = await llm.is_model_warm()
     return ModelStatusResponse(
         warm=warm,
-        model=ollama._model,
+        model=llm.model,
         estimated_warmup_seconds=None if warm else _COLD_START_ESTIMATE_S,
     )

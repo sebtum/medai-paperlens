@@ -18,8 +18,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Opt-in only (ADR-007: Ollama is the sole required LLM provider). Used by
-# scripts/llm_bench/providers.py's GeminiClient for benchmark/eval scripts.
+# Opt-in only (ADR-0007: Ollama is the required default LLM provider; ADR-0016
+# extends it with Gemini as an opt-in application provider behind LLM_PROVIDER).
+# Used by app/llm/gemini.py and scripts/llm_bench/providers.py's BenchGeminiClient.
 gemini = ["google-genai>=1.0.0"]
 
 [dependency-groups]

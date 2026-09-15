@@ -1,4 +1,4 @@
-# ADR-0007: Use pytest, ruff, and mypy for quality gates
+# ADR-0009: Use pytest, ruff, and mypy for quality gates
 
 ## Status
 

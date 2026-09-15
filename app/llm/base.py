@@ -20,3 +20,12 @@ class LlmProvider(Protocol):
         response_model: type[T],
         **kwargs: Any,
     ) -> T: ...
+
+
+@runtime_checkable
+class ModelStatusProvider(Protocol):
+    model: str
+
+    async def warmup(self) -> None: ...
+
+    async def is_model_warm(self) -> bool: ...

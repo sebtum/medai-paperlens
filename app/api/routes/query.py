@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from qdrant_client import AsyncQdrantClient
 
 from app.llm.base import LlmProvider
-from app.llm.ollama import get_ollama_client
+from app.llm.factory import get_llm_provider
 from app.models.query import QueryRequest, QueryResponse
 from app.retrieval.client import get_async_client
 from app.retrieval.embedding import EmbeddingProvider, get_embedding_provider
@@ -19,9 +19,9 @@ async def query(
     request: QueryRequest,
     client: Annotated[AsyncQdrantClient, Depends(get_async_client)],
     provider: Annotated[EmbeddingProvider, Depends(get_embedding_provider)],
-    ollama: Annotated[LlmProvider, Depends(get_ollama_client)],
+    llm: Annotated[LlmProvider, Depends(get_llm_provider)],
 ) -> QueryResponse:
-    workflow = build_workflow(client, provider, ollama)
+    workflow = build_workflow(client, provider, llm)
     initial: WorkflowState = {
         "question": request.question,
         "rewritten": request.question,

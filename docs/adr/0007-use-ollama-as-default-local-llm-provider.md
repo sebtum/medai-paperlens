@@ -1,4 +1,4 @@
-# ADR-0004: Use Ollama as default local LLM provider
+# ADR-0007: Use Ollama as default local LLM provider
 
 ## Status
 

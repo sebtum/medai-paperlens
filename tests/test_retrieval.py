@@ -8,7 +8,7 @@ from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 from qdrant_client.models import CollectionDescription, CollectionsResponse
 
-from app.llm.ollama import get_ollama_client
+from app.llm.factory import get_llm_provider
 from app.main import app
 from app.retrieval.client import get_async_client
 from app.retrieval.embedding import embed, get_embedding_provider
@@ -57,7 +57,7 @@ async def http_client(
 
     app.dependency_overrides[get_async_client] = lambda: async_qdrant
     app.dependency_overrides[get_embedding_provider] = lambda: mock_provider
-    app.dependency_overrides[get_ollama_client] = lambda: mock_ollama
+    app.dependency_overrides[get_llm_provider] = lambda: mock_ollama
 
     async with LifespanManager(app) as manager, AsyncClient(
         transport=ASGITransport(app=manager.app), base_url="http://test"

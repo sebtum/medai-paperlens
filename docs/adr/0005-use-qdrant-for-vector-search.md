@@ -1,4 +1,4 @@
-# ADR-0001: Use Qdrant for vector search
+# ADR-0005: Use Qdrant for vector search
 
 ## Status
 

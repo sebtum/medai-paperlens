@@ -1,4 +1,4 @@
-# ADR-0005: Use LangGraph for explicit agent workflow
+# ADR-0008: Use LangGraph for explicit agent workflow
 
 ## Status
 

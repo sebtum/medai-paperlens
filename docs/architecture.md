@@ -103,7 +103,7 @@ POST /query
 Responsibilities:
 
 - validate requests
-- manage Ollama client lifespan (async context manager via `app.state.ollama`)
+- manage the active LLM provider's lifespan (async context manager via `app.state.llm`)
 - build and invoke the LangGraph workflow
 - return structured `QueryResponse`
 
@@ -134,13 +134,20 @@ Retrieved chunks include citation metadata (title, source URL, excerpt).
 
 ### LLM Provider
 
-`LlmProvider` is a Protocol with `generate()` and `generate_structured()`.
+`LlmProvider` is a Protocol with `generate()` and `generate_structured()`. A separate
+`ModelStatusProvider` Protocol (`model`, `warmup()`, `is_model_warm()`) backs
+`GET /model/status`.
 
-`OllamaClient` is the only concrete implementation. Default model: `qwen2.5:3b` (configurable via `OLLAMA_MODEL`).
+`OllamaClient` is the default, required implementation. Default model: `qwen3:0.6b`,
+thinking mode off (configurable via `OLLAMA_MODEL` / `OLLAMA_THINK`) — see
+`docs/benchmarks.md` for the speed measurements behind this default.
 
-External providers can be added behind the protocol but must be opt-in and disabled by default.
+`GeminiClient` is an opt-in second implementation, selected via `LLM_PROVIDER=gemini`
+and `app/llm/factory.py`'s `make_llm_provider()`. It stays disabled by default; the
+`google-genai` SDK is an optional dependency imported lazily so the app still runs
+without it installed.
 
-Tests use a mock provider — no live Ollama required in the test suite.
+Tests use a mock provider — no live Ollama or Gemini required in the test suite.
 
 ### Grounding Validator
 
@@ -234,6 +241,11 @@ Example:
 
 ```text
 OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:0.6b
+OLLAMA_THINK=false
+LLM_PROVIDER=ollama
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
 QDRANT_URL=http://localhost:6333
 LOG_LEVEL=INFO
 ```

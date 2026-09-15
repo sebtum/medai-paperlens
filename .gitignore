@@ -31,3 +31,6 @@ build/
 
 # Claude Code — local overrides are personal, not team-shared
 .claude/settings.local.json
+
+# Benchmark harness working output (committed evidence lives under docs/benchmarks/)
+/benchmark_results.csv

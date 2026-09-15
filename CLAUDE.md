@@ -29,6 +29,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 .\.venv\Scripts\python.exe scripts/ingest.py
 .\.venv\Scripts\python.exe scripts/ingest.py --overwrite   # drop and re-index
 
+# Benchmark candidate LLM providers/models for speed (run as a module)
+.\.venv\Scripts\python.exe -m scripts.benchmark_llm --models ollama:qwen3:0.6b,ollama:qwen3:1.7b
+
+# Generate a human-scorable groundedness/quality review sheet (run as a module)
+.\.venv\Scripts\python.exe -m scripts.eval_llm --models ollama:qwen3:0.6b --format markdown
+
 # Run the Streamlit UI
 .\.venv\Scripts\streamlit.exe run ui/app.py
 
@@ -67,15 +73,18 @@ Streamlit UI → FastAPI Backend → LangGraph Workflow
 ### Current implementation (Phase 5 complete)
 
 **API layer**
-- `app/main.py` — FastAPI app factory; manages `OllamaClient` lifespan; mounts `health_router` and `query_router`; registers `UnsafeQueryError` exception handler.
+- `app/main.py` — FastAPI app factory; manages the active LLM provider's lifespan via `make_llm_provider()`; mounts `health_router`, `model_router`, and `query_router`; registers `UnsafeQueryError` exception handler.
 - `app/api/routes/health.py` — `GET /health` endpoint.
+- `app/api/routes/model.py` — `GET /model/status`. Reports whether the active LLM provider's model is warm.
 - `app/api/routes/query.py` — `POST /query`. Builds and invokes the LangGraph workflow, returns `QueryResponse`.
 - `app/core/exceptions.py` — `UnsafeQueryError`.
 - `app/models/query.py` — `QueryRequest`, `Citation`, `QueryResponse`.
 
 **LLM layer**
-- `app/llm/base.py` — `LlmProvider` Protocol with `generate()` and `generate_structured()`.
-- `app/llm/ollama.py` — `OllamaClient`: async context manager; `generate()` calls `/api/generate` (string prompt) or `/api/chat` (message list); default model `qwen3.5:4b` via `OLLAMA_MODEL` env var.
+- `app/llm/base.py` — `LlmProvider` Protocol with `generate()` and `generate_structured()`; `ModelStatusProvider` Protocol with `model`, `warmup()`, `is_model_warm()`.
+- `app/llm/ollama.py` — `OllamaClient`: async context manager; `generate()` calls `/api/generate` (string prompt) or `/api/chat` (message list); default model `qwen3:0.6b` via `OLLAMA_MODEL` env var, thinking mode off by default via `OLLAMA_THINK`.
+- `app/llm/gemini.py` — `GeminiClient`: opt-in application provider over the `google-genai` SDK (optional extra); satisfies `LlmProvider` and `ModelStatusProvider` structurally.
+- `app/llm/factory.py` — `make_llm_provider()` dispatches on `LLM_PROVIDER` (`ollama` default, `gemini` opt-in); `get_llm_provider()` is the FastAPI dependency reading `app.state.llm`.
 
 **Workflow layer** (LangGraph)
 - `app/workflow/state.py` — `WorkflowState` TypedDict: `question`, `rewritten`, `is_unsafe`, `citations`, `confidence`, `answer`, `grounded`, `route`.
@@ -99,8 +108,8 @@ Streamlit UI → FastAPI Backend → LangGraph Workflow
 - **Constrained agentic RAG, not a full autonomous agent** — explicit workflow nodes, no open-ended multi-step web research (ADR-0001).
 - **FastAPI backend, Streamlit UI** — UI holds no business logic; backend owns the RAG workflow (ADR-0004, ADR-0006).
 - **Qdrant** for vector search over the paper corpus (ADR-0005).
-- **Ollama** is the default and only required LLM provider. External providers must be opt-in and disabled by default (ADR-007).
-- **LangGraph** is the workflow orchestrator (ADR-008).
+- **Ollama** is the default and only required LLM provider. External providers must be opt-in and disabled by default (ADR-0007). Gemini is available as one such opt-in provider behind `LLM_PROVIDER=gemini` (ADR-0016).
+- **LangGraph** is the workflow orchestrator (ADR-0008).
 - **Docker Compose** before Kubernetes — do not add K8s until Compose is working (ADR-0002).
 
 ### Build order constraint
@@ -144,5 +153,5 @@ All five must pass before a PR is mergeable (enforced in CI via GitHub Actions):
 ## Absolute constraints
 
 - No patient data, personal health information, or clinical decision support — ever.
-- No secrets committed to Git. Use environment variables (`OLLAMA_BASE_URL`, `QDRANT_URL`, `LOG_LEVEL`). Commit `.env.example`, never `.env`.
+- No secrets committed to Git. Use environment variables (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_THINK`, `LLM_PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `QDRANT_URL`, `LOG_LEVEL`). Commit `.env.example`, never `.env`.
 - Do not make clinical claims in any generated output.
