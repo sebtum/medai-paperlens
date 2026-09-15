@@ -49,7 +49,7 @@ Citation-grounded Research Summary
 - Ollama (local LLM, default model: `qwen3:0.6b`), with an opt-in Gemini provider
 - sentence-transformers (embeddings)
 - Streamlit
-- Docker Compose (planned)
+- Docker Compose (full local stack)
 - GitHub Actions CI
 - pytest / ruff / mypy / bandit / pip-audit
 
@@ -62,9 +62,34 @@ Citation-grounded Research Summary
 | 3 | Qdrant retrieval layer | ✅ Done |
 | 4 | LangGraph workflow + Ollama LLM synthesis | ✅ Done |
 | 5 | Streamlit UI | ✅ Done |
-| 6 | Docker Compose full-stack | Next |
+| 6 | Docker Compose full-stack | ✅ Done |
 
-## Running locally
+Phase 6 completes the build order laid out in `CLAUDE.md`.
+
+## Running with Docker Compose
+
+The easiest way to run the full stack — no manual setup required:
+
+```powershell
+docker compose up --build
+```
+
+This starts Qdrant, Ollama (pulling `qwen3:0.6b` on first run), a one-shot
+ingest job that loads the paper corpus into Qdrant, the FastAPI backend, and
+the Streamlit UI, all wired together automatically. First run takes a few
+minutes (model pull); later runs are fast since the Qdrant/Ollama/embedding
+caches persist in Docker volumes.
+
+Once it's up:
+
+- UI: http://localhost:8501
+- API: http://localhost:8000 (`/health`, `/query`)
+- Qdrant dashboard: http://localhost:6333/dashboard
+
+Stop everything with `docker compose down` (add `-v` to also wipe the cached
+model/data volumes).
+
+## Running locally (without Docker)
 
 **Requirements:** Qdrant and Ollama must be running locally.
 
@@ -112,7 +137,9 @@ decision record. A hosted Gemini provider is available opt-in behind
 ```json
 {
   "answer": "...",
-  "citations": [{"title": "...", "source_url": "...", "chunk_id": "...", "excerpt": "..."}],
+  "citations": [
+    {"title": "...", "authors": ["..."], "year": 2024, "doi": "10.48550/arXiv...", "excerpt": "..."}
+  ],
   "confidence": 0.87,
   "grounded": true,
   "debug": {"route": "retrieval"}
