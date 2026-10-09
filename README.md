@@ -2,11 +2,20 @@
 
 MedAI PaperLens is a local-first AI engineering portfolio project for medical AI literature intelligence.
 
-It accepts research questions and returns citation-grounded summaries over a constrained corpus of public medical AI papers.
+It answers research questions over a curated corpus of full-text public medical AI papers. Answers are streamed as they are generated and cite the specific paper, section and page they draw on. Every retrieval and generation choice is backed by measurement rather than intuition.
+
+## Goals
+
+- **Real document RAG.** Full-text PDFs are parsed into structure-aware chunks, not abstracts, so retrieval has to find the right passage inside a paper rather than the right paper among a handful.
+- **Grounded answers.** Each claim points back to a paper, section and page, and a grounding validator checks that the cited evidence supports the answer.
+- **Retrieval quality.** Dense vector search is combined with keyword search and a cross-encoder reranker, so that exact model names and acronyms (MAIRA-2, CONCH, Med-PaLM M) are found as reliably as paraphrased concepts.
+- **Measurable evaluation.** A hand-labeled golden question set drives retrieval metrics (Recall@k, MRR, nDCG@k) across configurations. An LLM-as-judge scores faithfulness, citation correctness and relevance, and is itself calibrated against human ratings. The safety filter is evaluated for precision and recall.
+- **Responsive UX on modest hardware.** Answers stream token by token with visible pipeline steps. A small local model is the default, and a hosted model is available as an opt-in.
+- **Local-first and safe by design.** Runs fully offline with Ollama. External providers are opt-in only. Public papers only, never patient data.
 
 ## Scope
 
-The MVP focuses on medical AI papers related to:
+The corpus focuses on medical AI papers related to:
 
 - chest X-ray visual question answering
 - medical vision-language models
@@ -26,18 +35,29 @@ This project does not provide:
 ## Architecture
 
 ```
-Streamlit UI
- ↓
-FastAPI Backend
- ↓
-LangGraph Workflow
- ├── Query Classifier   — phrase-pattern safety filter
- ├── Query Rewriter     — Ollama-backed retrieval query improvement
- ├── Paper Retriever    — Qdrant vector search, fills citations + evidence
- ├── Answer Generator   — Ollama LLM synthesis over retrieved evidence
- └── Grounding Validator — checks citations exist and answer is non-empty
- ↓
-Citation-grounded Research Summary
+Ingestion
+ arXiv PDFs → document parsing → structure-aware chunks
+            → embeddings (+ keyword index) → Qdrant
+
+Query
+ Streamlit UI  (streamed answer + citations)
+  ↓
+ FastAPI Backend
+  ↓
+ LangGraph Workflow
+  ├── Query Classifier    — safety filter for personal medical advice
+  ├── Query Rewriter      — retrieval query improvement
+  ├── Paper Retriever     — hybrid search over chunks
+  ├── Reranker            — cross-encoder relevance scoring
+  ├── Answer Generator    — LLM synthesis over retrieved evidence
+  └── Grounding Validator — checks the answer against its citations
+  ↓
+ Citation-grounded Research Summary
+
+Evaluation
+ golden question set → retrieval metrics per configuration
+ LLM-as-judge (calibrated against human ratings) → generation quality
+ labeled safe/unsafe questions → safety filter precision/recall
 ```
 
 ## Tech Stack
@@ -45,28 +65,21 @@ Citation-grounded Research Summary
 - Python 3.14
 - FastAPI
 - LangGraph
-- Qdrant
+- Qdrant (dense + sparse vectors)
 - Ollama (local LLM, default model: `qwen3:0.6b`), with an opt-in Gemini provider
-- sentence-transformers (embeddings)
+- Docling (PDF parsing and chunking)
+- sentence-transformers (embeddings and cross-encoder reranking)
 - Streamlit
 - Docker Compose (full local stack)
 - GitHub Actions CI
 - pytest / ruff / mypy / bandit / pip-audit
 
-## Status
+## Documentation
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 1 | FastAPI `/health` + `/query` endpoints | ✅ Done |
-| 2 | Query API contract + unsafe-query refusal | ✅ Done |
-| 3 | Qdrant retrieval layer | ✅ Done |
-| 4 | LangGraph workflow + Ollama LLM synthesis | ✅ Done |
-| 5 | Streamlit UI | ✅ Done |
-| 6 | Docker Compose full-stack | ✅ Done |
-
-Phase 6 completes the MVP build order. Phases 7–11 (streaming, full-text
-ingestion, retrieval evaluation, rerank/hybrid search, generation evaluation)
-are planned in [`docs/roadmap.md`](docs/roadmap.md).
+- [`docs/architecture.md`](docs/architecture.md) — system design
+- [`docs/adr/`](docs/adr/) — architecture decision records
+- [`docs/benchmarks.md`](docs/benchmarks.md) — LLM speed measurements
+- [`docs/roadmap.md`](docs/roadmap.md) — project direction
 
 ## Running with Docker Compose
 
