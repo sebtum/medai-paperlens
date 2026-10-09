@@ -64,7 +64,9 @@ Citation-grounded Research Summary
 | 5 | Streamlit UI | ✅ Done |
 | 6 | Docker Compose full-stack | ✅ Done |
 
-Phase 6 completes the build order laid out in `CLAUDE.md`.
+Phase 6 completes the MVP build order. Phases 7–11 (streaming, full-text
+ingestion, retrieval evaluation, rerank/hybrid search, generation evaluation)
+are planned in [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Running with Docker Compose
 

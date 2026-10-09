@@ -70,7 +70,7 @@ Streamlit UI → FastAPI Backend → LangGraph Workflow
                                            → Citation-grounded response
 ```
 
-### Current implementation (Phase 5 complete)
+### Current implementation (Phase 6 complete)
 
 **API layer**
 - `app/main.py` — FastAPI app factory; manages the active LLM provider's lifespan via `make_llm_provider()`; mounts `health_router`, `model_router`, and `query_router`; registers `UnsafeQueryError` exception handler.
@@ -119,7 +119,9 @@ Do not add the next layer until the current one is stable:
 2. ~~Local retrieval against Qdrant corpus~~ ✓
 3. ~~LangGraph workflow nodes + Ollama LLM synthesis~~ ✓
 4. ~~Streamlit UI~~ ✓
-5. Docker Compose for full-stack local run  ← next
+5. ~~Docker Compose for full-stack local run~~ ✓
+
+Phases 7–11 (streaming, full-text ingestion, retrieval eval, rerank/hybrid, generation eval) are ordered in [`docs/roadmap.md`](docs/roadmap.md). Next: Phase 7 (streaming). Write each phase's ADRs during that phase's planning, not in advance.
 
 ### API contract
 
