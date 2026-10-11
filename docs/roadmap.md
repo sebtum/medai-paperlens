@@ -41,6 +41,13 @@ These shape more than one phase, so they are settled up front.
   Google AI Studio API key stays opt-in
   ([ADR-0016](adr/0016-optional-hosted-llm-provider.md)) and is used as the demo
   generator, the eval judge, and the drafter of candidate golden-set questions.
+- **Observability and evaluation via LangSmith (opt-in).** Tracing is enabled
+  with `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` (optionally
+  `LANGSMITH_PROJECT`); LangGraph nodes are traced without code changes.
+  Evaluation runs as LangSmith experiments over versioned LangSmith datasets.
+  Off by default: the app runs fully offline without it, evaluation requires an
+  account, and the test suite never depends on it. The `langsmith` SDK is already
+  an indirect dependency via langgraph.
 - **Measure before improving.** Retrieval improvements (reranking, hybrid search)
   come only after the retrieval eval exists, so every change ships with a
   measured delta.
@@ -49,11 +56,11 @@ These shape more than one phase, so they are settled up front.
 
 | # | Phase | Goal | Expected ADR(s) |
 |---|---|---|---|
-| 7 | Streaming | Tokens and step status (rewriting, retrieving, generating) are visible in the UI as they happen. `POST /query` stays unchanged for tests and eval. | SSE `POST /query/stream` endpoint; `stream()` on the LLM provider interface |
+| 7 | Streaming | Tokens and step status (rewriting, retrieving, generating) are visible in the UI as they happen. `POST /query` stays unchanged for tests and eval. Opt-in LangSmith tracing for per-node latency and inputs/outputs. | SSE `POST /query/stream` endpoint; `stream()` on the LLM provider interface; LangSmith for observability and evaluation |
 | 8 | Full-text ingestion | Parse PDFs (Docling), chunk by document structure, upgrade the embedding model, and show section/page citations. | Parser choice (Docling vs PyMuPDF4LLM); chunking strategy; embedding model |
-| 9 | Retrieval evaluation | Golden set of 40–60 questions (Gemini-drafted, human-filtered). Recall@k, MRR, and nDCG@k for each retrieval configuration. Results committed under `docs/eval/`. | Hand-rolled metrics instead of RAGAS (CLAUDE.md framework rule); golden-set methodology |
+| 9 | Retrieval evaluation | Golden set of 40–60 questions (Gemini-drafted, human-filtered) stored as a LangSmith dataset. Each retrieval configuration runs as a LangSmith experiment. Recall@k, MRR, and nDCG@k are custom evaluator functions passed to `evaluate()`, since there are no built-in metrics for paper + section labels. | Golden-set methodology; dataset versioning |
 | 10 | Rerank and hybrid search | Retrieve top 20, rerank with a cross-encoder, keep top 5. Optionally BM25 + dense fusion (RRF) in Qdrant. Each change is justified by Phase 9 numbers. | Reranker model; whether hybrid search is worth it |
-| 11 | Generation and safety eval | LLM-as-judge (Gemini, structured output) scoring faithfulness, citation correctness, and relevance. Judge calibrated against the human scores from [`scripts/eval_llm.py`](../scripts/eval_llm.py) (Cohen's κ). Precision/recall of the safety filter. Replace the stub `validate_node` based on findings. | Judge model and rubric (amends ADR-0016); grounding validator design |
+| 11 | Generation and safety eval | LangSmith LLM-as-judge evaluators (Gemini as judge model) scoring faithfulness, citation correctness, and relevance. Human ratings collected through LangSmith annotation queues, replacing the CSV sheet from [`scripts/eval_llm.py`](../scripts/eval_llm.py) as the calibration source; judge-human agreement reported as Cohen's κ. Precision/recall of the safety filter. Replace the stub `validate_node` based on findings. | Judge model, rubric and calibration method (amends ADR-0016); grounding validator design |
 
 ### Exit criteria (every phase)
 
@@ -78,5 +85,8 @@ Decided in each phase's own discussion, not now:
 - **JEPA / VL-JEPA.** A vision-language research architecture with no off-the-shelf
   text reranker. A cross-encoder already gives a single-score relevance judgment
   without token generation.
+- **Langfuse.** Open-source, self-hostable alternative to LangSmith. Considered
+  but not chosen: it adds Postgres, ClickHouse, Redis and its own server to the
+  Compose stack. Revisit if offline evaluation becomes a requirement.
 - **Kubernetes.** Parked per [ADR-0002](adr/0002-docker-before-k8.md).
 - **Expanding the corpus beyond 10 papers.** Revisit after Phase 10.

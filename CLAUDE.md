@@ -133,7 +133,7 @@ Unsafe medical queries (diagnosis, treatment, patient advice) must return a refu
 
 ## Testing
 
-Tests use `httpx.AsyncClient` with `ASGITransport` (in-process, no running server needed). `pytest-asyncio` is configured in `auto` mode — no `@pytest.mark.asyncio` decorator required. LLM calls must use a mock provider; never require a live Ollama or external API in the test suite.
+Tests use `httpx.AsyncClient` with `ASGITransport` (in-process, no running server needed). `pytest-asyncio` is configured in `auto` mode — no `@pytest.mark.asyncio` decorator required. LLM calls must use a mock provider; never require a live Ollama or external API in the test suite. Tests must not require a LangSmith account; leave `LANGSMITH_TRACING` unset in tests and CI.
 
 ## Coding standards
 
@@ -155,5 +155,5 @@ All five must pass before a PR is mergeable (enforced in CI via GitHub Actions):
 ## Absolute constraints
 
 - No patient data, personal health information, or clinical decision support — ever.
-- No secrets committed to Git. Use environment variables (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_THINK`, `LLM_PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `QDRANT_URL`, `LOG_LEVEL`). Commit `.env.example`, never `.env`.
+- No secrets committed to Git. Use environment variables (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_THINK`, `LLM_PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `QDRANT_URL`, `LOG_LEVEL`, `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`). Commit `.env.example`, never `.env`.
 - Do not make clinical claims in any generated output.

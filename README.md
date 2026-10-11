@@ -9,7 +9,7 @@ It answers research questions over a curated corpus of full-text public medical 
 - **Real document RAG.** Full-text PDFs are parsed into structure-aware chunks, not abstracts, so retrieval has to find the right passage inside a paper rather than the right paper among a handful.
 - **Grounded answers.** Each claim points back to a paper, section and page, and a grounding validator checks that the cited evidence supports the answer.
 - **Retrieval quality.** Dense vector search is combined with keyword search and a cross-encoder reranker, so that exact model names and acronyms (MAIRA-2, CONCH, Med-PaLM M) are found as reliably as paraphrased concepts.
-- **Measurable evaluation.** A hand-labeled golden question set drives retrieval metrics (Recall@k, MRR, nDCG@k) across configurations. An LLM-as-judge scores faithfulness, citation correctness and relevance, and is itself calibrated against human ratings. The safety filter is evaluated for precision and recall.
+- **Measurable evaluation.** A hand-labeled golden question set drives retrieval metrics (Recall@k, MRR, nDCG@k) across configurations. An LLM-as-judge scores faithfulness, citation correctness and relevance, and is itself calibrated against human ratings. The safety filter is evaluated for precision and recall. Datasets, experiments and traces are tracked in LangSmith.
 - **Responsive UX on modest hardware.** Answers stream token by token with visible pipeline steps. A small local model is the default, and a hosted model is available as an opt-in.
 - **Local-first and safe by design.** Runs fully offline with Ollama. External providers are opt-in only. Public papers only, never patient data.
 
@@ -70,6 +70,7 @@ Evaluation
 - Docling (PDF parsing and chunking)
 - sentence-transformers (embeddings and cross-encoder reranking)
 - Streamlit
+- LangSmith (tracing and evaluation, opt-in)
 - Docker Compose (full local stack)
 - GitHub Actions CI
 - pytest / ruff / mypy / bandit / pip-audit
