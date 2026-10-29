@@ -99,7 +99,7 @@ caches persist in Docker volumes.
 Once it's up:
 
 - UI: http://localhost:8501
-- API: http://localhost:8000 (`/health`, `/query`)
+- API: http://localhost:8000 (`/health`, `/query`, `/query/stream`)
 - Qdrant dashboard: http://localhost:6333/dashboard
 
 Stop everything with `docker compose down` (add `-v` to also wipe the cached
@@ -163,3 +163,18 @@ decision record. A hosted Gemini provider is available opt-in behind
 ```
 
 Unsafe personal-advice queries (e.g. "diagnose me", "my symptoms") return a refusal with `"grounded": false`.
+
+`POST /query/stream` — same request body as `/query`; returns Server-Sent Events (`event:` = type, `data:` = JSON):
+
+| Event | Payload |
+|---|---|
+| `step_start` | `{"node"}` |
+| `step_end` | `{"node", "elapsed_ms"}` |
+| `citations` | `{"citations", "confidence"}` (after retrieve) |
+| `token` | `{"text"}` |
+| `error` | `{"message"}` |
+| `final` | the full `/query` response; authoritative, replaces streamed text |
+
+Unsafe queries emit no `token` events; `final` carries the refusal. A client disconnect cancels the workflow and the LLM request. Try it: `curl -N -X POST localhost:8000/query/stream -H "content-type: application/json" -d "{\"question\": \"vision transformers for chest X-rays\"}"`.
+
+Tracing is opt-in: set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY` (and optionally `LANGSMITH_PROJECT`). Unset, no client is created and nothing leaves the machine.

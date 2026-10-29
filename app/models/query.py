@@ -29,3 +29,29 @@ class QueryResponse(BaseModel):
     confidence: float
     grounded: bool
     debug: dict[str, Any]
+
+
+# Payloads of the `POST /query/stream` SSE events (ADR-0017). The `final` event
+# carries a QueryResponse; every other event type has a model below.
+
+
+class StepStartEvent(BaseModel):
+    node: str
+
+
+class StepEndEvent(BaseModel):
+    node: str
+    elapsed_ms: int
+
+
+class CitationsEvent(BaseModel):
+    citations: list[Citation]
+    confidence: float
+
+
+class TokenEvent(BaseModel):
+    text: str
+
+
+class ErrorEvent(BaseModel):
+    message: str

@@ -18,5 +18,8 @@
 | [0014](0014-llm-provider-protocol.md) | LlmProvider Protocol for decoupled LLM inference | Accepted | |
 | [0015](0015-default-model-qwen3-06b-no-thinking.md) | Default model qwen3:0.6b with thinking disabled | Accepted | Supersedes 0011, 0013 |
 | [0016](0016-optional-hosted-llm-provider.md) | Optional hosted LLM provider (Gemini) behind LLM_PROVIDER | Accepted | Extends 0007 |
+| [0017](0017-sse-query-stream-endpoint.md) | SSE `POST /query/stream` and its event schema | Accepted | |
+| [0018](0018-stream-on-llm-provider.md) | `stream()` on the LLM provider interface | Accepted | Amends 0014 |
+| [0019](0019-langsmith-opt-in-observability.md) | LangSmith for observability and evaluation (opt-in) | Accepted | |
 
 See [0000-template.md](0000-template.md) for the ADR format.

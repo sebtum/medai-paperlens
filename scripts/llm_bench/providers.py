@@ -104,7 +104,7 @@ async def get_ollama_model_size(
             normalized = name if ":" in name else f"{name}:latest"
             if normalized == target:
                 return entry.get("size")
-    except (httpx.HTTPError, ValueError):
+    except httpx.HTTPError, ValueError:
         return None
     return None
 
