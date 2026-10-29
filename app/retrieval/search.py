@@ -42,6 +42,8 @@ async def search(
     confidence = float(results.points[0].score) if results.points else 0.0
     logger.info(
         "search: %d/%d results above threshold (best=%.2f)",
-        len(citations), top_k, confidence,
+        len(citations),
+        top_k,
+        confidence,
     )
     return citations, confidence

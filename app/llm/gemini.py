@@ -8,11 +8,13 @@ isn't installed.
 """
 
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from types import TracebackType
 from typing import Any
 
-from app.llm.base import T
+from langsmith import traceable
+
+from app.llm.base import T, join_chunks
 
 
 class GeminiClient:
@@ -43,6 +45,7 @@ class GeminiClient:
     ) -> None:
         self._client = None
 
+    @traceable(run_type="llm", name="gemini.generate")
     async def generate(
         self,
         prompt: str | Sequence[Mapping[str, str]],
@@ -50,15 +53,32 @@ class GeminiClient:
     ) -> str:
         if self._client is None:
             raise RuntimeError("GeminiClient must be used as async context manager")
-        contents = (
-            prompt
-            if isinstance(prompt, str)
-            else "\n\n".join(m["content"] for m in prompt)
-        )
         response = await self._client.aio.models.generate_content(
-            model=self._model, contents=contents
+            model=self._model, contents=self._contents(prompt)
         )
         return str(response.text)
+
+    @traceable(run_type="llm", name="gemini.stream", reduce_fn=join_chunks)
+    async def stream(
+        self,
+        prompt: str | Sequence[Mapping[str, str]],
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """Yield non-empty text chunks from the SDK's streaming call."""
+        if self._client is None:
+            raise RuntimeError("GeminiClient must be used as async context manager")
+        chunks = await self._client.aio.models.generate_content_stream(
+            model=self._model, contents=self._contents(prompt)
+        )
+        async for chunk in chunks:
+            if chunk.text:
+                yield str(chunk.text)
+
+    @staticmethod
+    def _contents(prompt: str | Sequence[Mapping[str, str]]) -> str:
+        if isinstance(prompt, str):
+            return prompt
+        return "\n\n".join(m["content"] for m in prompt)
 
     async def generate_structured(
         self,

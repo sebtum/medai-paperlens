@@ -1,6 +1,8 @@
 import asyncio
+import json
 import os
 import time
+from collections.abc import Iterable, Iterator
 from typing import Any, TypedDict
 
 import httpx
@@ -8,6 +10,7 @@ import streamlit as st
 
 API_BASE_URL: str = os.environ.get("API_BASE_URL", "http://localhost:8000")
 QUERY_ENDPOINT: str = f"{API_BASE_URL}/query"
+STREAM_ENDPOINT: str = f"{API_BASE_URL}/query/stream"
 HEALTH_ENDPOINT: str = f"{API_BASE_URL}/health"
 MODEL_STATUS_ENDPOINT: str = f"{API_BASE_URL}/model/status"
 REQUEST_TIMEOUT: float = 300.0
@@ -44,7 +47,7 @@ async def check_backend_health() -> bool:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(HEALTH_ENDPOINT)
             return response.status_code == 200
-    except (httpx.ConnectError, httpx.TimeoutException):
+    except httpx.ConnectError, httpx.TimeoutException:
         return False
 
 
@@ -54,7 +57,7 @@ async def check_model_status() -> ModelStatus | None:
             response = await client.get(MODEL_STATUS_ENDPOINT)
             response.raise_for_status()
             return response.json()
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError):
+    except httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError:
         return None
 
 
@@ -80,15 +83,123 @@ async def call_query_api(
         return None, _ERR_HTTP
 
 
+def parse_sse_lines(lines: Iterable[str]) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Parse SSE text lines into ``(event, json_payload)`` pairs.
+
+    Comment lines (keepalives) and events without data are ignored.
+    """
+    event = "message"
+    data: list[str] = []
+    for line in lines:
+        if line == "":
+            if data:
+                yield event, json.loads("\n".join(data))
+            event, data = "message", []
+        elif line.startswith(":"):
+            continue
+        else:
+            field, _, value = line.partition(":")
+            value = value.removeprefix(" ")
+            if field == "event":
+                event = value
+            elif field == "data":
+                data.append(value)
+    if data:
+        yield event, json.loads("\n".join(data))
+
+
+def stream_query_api(
+    question: str,
+    score_threshold: float = 0.4,
+    transport: httpx.BaseTransport | None = None,
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield SSE events from ``POST /query/stream``.
+
+    Transport failures are yielded as a final ``("client_error", {"error": code})``
+    event so the caller can pass the code to ``render_error``.
+    """
+    try:
+        with (
+            httpx.Client(
+                timeout=httpx.Timeout(connect=30.0, read=None, write=30.0, pool=30.0),
+                transport=transport,
+            ) as client,
+            client.stream(
+                "POST",
+                STREAM_ENDPOINT,
+                json={"question": question, "score_threshold": score_threshold},
+            ) as response,
+        ):
+            response.raise_for_status()
+            yield from parse_sse_lines(response.iter_lines())
+    except httpx.ConnectError:
+        yield "client_error", {"error": _ERR_CONNECT}
+    except httpx.TimeoutException:
+        yield "client_error", {"error": _ERR_TIMEOUT}
+    except httpx.HTTPStatusError, httpx.TransportError, json.JSONDecodeError:
+        yield "client_error", {"error": _ERR_HTTP}
+
+
+_STEP_LABELS: dict[str, str] = {
+    "classify": "Checking query",
+    "rewrite": "Rewriting query",
+    "retrieve": "Retrieving papers",
+    "generate": "Generating answer",
+    "validate": "Validating grounding",
+}
+
+
+def run_streamed_query(
+    question: str, score_threshold: float
+) -> tuple[QueryResult | None, str | None]:
+    """Render the live stream (steps, citations, tokens); return the final result."""
+    result: QueryResult | None = None
+    error: str | None = None
+    lines: list[str] = []
+    text = ""
+    with st.status("Querying…", expanded=True) as status:
+        steps_box = st.empty()
+        citations_box = st.empty()
+        answer_box = st.empty()
+        for event, payload in stream_query_api(question, score_threshold):
+            if event == "step_start":
+                label = _STEP_LABELS.get(payload["node"], payload["node"])
+                lines.append(f"⏳ {label}…")
+                steps_box.markdown("\n\n".join(lines))
+            elif event == "step_end":
+                label = _STEP_LABELS.get(payload["node"], payload["node"])
+                lines[-1] = f"✅ {label} ({payload['elapsed_ms'] / 1000:.1f} s)"
+                steps_box.markdown("\n\n".join(lines))
+            elif event == "citations":
+                titles = [c["title"] for c in payload["citations"]]
+                citations_box.markdown(
+                    f"**{len(titles)} papers found:** " + "; ".join(titles)
+                    if titles
+                    else "No papers found."
+                )
+            elif event == "token":
+                text += payload["text"]
+                answer_box.markdown(text)
+            elif event == "final":
+                result = QueryResult(**payload)  # type: ignore[typeddict-item]
+            elif event == "client_error":
+                error = payload["error"]
+        if result is None and error is None:
+            error = _ERR_HTTP
+        status.update(
+            label="Done" if error is None else "Failed",
+            state="complete" if error is None else "error",
+            expanded=False,
+        )
+    return result, error
+
+
 def _build_spinner_text(model_status: ModelStatus | None) -> str:
     if model_status is None or model_status["warm"]:
         return "Querying…"
     est = model_status["estimated_warmup_seconds"]
     est_text = f" (~{est // 60} min)" if est is not None else ""
-    return (
-        f"Model '{model_status['model']}' is loading{est_text}"
-        f" — please wait…"
-    )
+    return f"Model '{model_status['model']}' is loading{est_text} — please wait…"
 
 
 @st.cache_data(ttl=10)
@@ -152,15 +263,21 @@ def render_error(error_type: str) -> None:
         st.error("The backend returned an unexpected error. Check the server logs.")
 
 
-@st.fragment(run_every=5)
 def _chat_zone() -> None:
     status = asyncio.run(check_model_status())
+    was_warm = st.session_state.get("model_warm", False)
+    is_warm = status is not None and status["warm"]
+    st.session_state["model_warm"] = is_warm
 
     if status is None:
         st.warning("Cannot determine model status. Retrying…")
+        if was_warm:
+            st.rerun()
         return
 
     if not status["warm"]:
+        if was_warm:
+            st.rerun()
         est = status["estimated_warmup_seconds"]
         est_text = f" (~{est // 60} min)" if est is not None else ""
         st.info(
@@ -169,14 +286,14 @@ def _chat_zone() -> None:
         )
         return
 
-    # Model is warm — render chat form
+    # Model is warm — stop polling (a timer rerun would interrupt the stream)
+    if not was_warm:
+        st.rerun()
     st.caption(f"Model: `{status['model']}`")
     with st.form("query_form"):
         question = st.text_area(
             "Research question",
-            placeholder=(
-                "e.g. What methods are used for chest X-ray classification?"
-            ),
+            placeholder=("e.g. What methods are used for chest X-ray classification?"),
             height=100,
         )
         score_threshold = st.slider(
@@ -196,10 +313,7 @@ def _chat_zone() -> None:
         st.session_state["result"] = None
         st.session_state["error"] = None
         start = time.monotonic()
-        with st.spinner("Querying…"):
-            result, error = asyncio.run(
-                call_query_api(question.strip(), score_threshold=score_threshold)
-            )
+        result, error = run_streamed_query(question.strip(), score_threshold)
         st.session_state["result"] = result
         st.session_state["error"] = error
         st.session_state["elapsed"] = time.monotonic() - start
@@ -251,7 +365,10 @@ def main() -> None:
         )
         st.stop()
 
-    _chat_zone()
+    # Poll model status only while the model is not warm; once warm the fragment
+    # reruns only on form submit, so a timer rerun cannot interrupt a running stream.
+    run_every = None if st.session_state.get("model_warm") else 5
+    st.fragment(run_every=run_every)(_chat_zone)()
 
 
 if __name__ == "__main__":

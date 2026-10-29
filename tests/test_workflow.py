@@ -1,6 +1,8 @@
 from unittest.mock import AsyncMock
 
 import numpy as np
+from conftest import FakeLlm
+from langgraph.graph import END, START, StateGraph
 from qdrant_client import AsyncQdrantClient
 
 from app.models.query import Citation
@@ -49,8 +51,7 @@ async def test_classify_unsafe_query() -> None:
 
 
 async def test_generate_with_citations() -> None:
-    mock_llm = AsyncMock()
-    mock_llm.generate.return_value = "AI achieves 90% accuracy in pneumonia detection."
+    fake_llm = FakeLlm(answer="AI achieves 90% accuracy in pneumonia detection.")
 
     state = _safe_state(
         question="How accurate is AI in pneumonia detection?",
@@ -60,16 +61,15 @@ async def test_generate_with_citations() -> None:
         route="retrieval",
     )
 
-    generate_node = make_generate_node(mock_llm)
+    generate_node = make_generate_node(fake_llm)
     result = await generate_node(state)
 
     assert result["answer"] == "AI achieves 90% accuracy in pneumonia detection."
-    mock_llm.generate.assert_called_once()
+    assert len(fake_llm.calls) == 1
 
 
 async def test_generate_fallback_on_ollama_error() -> None:
-    mock_llm = AsyncMock()
-    mock_llm.generate.side_effect = Exception("Ollama unavailable")
+    fake_llm = FakeLlm(error=Exception("Ollama unavailable"))
 
     state = _safe_state(
         citations=[_citation()],
@@ -77,10 +77,59 @@ async def test_generate_fallback_on_ollama_error() -> None:
         route="retrieval",
     )
 
-    generate_node = make_generate_node(mock_llm)
+    generate_node = make_generate_node(fake_llm)
     result = await generate_node(state)
 
     assert result["answer"] == _ERROR_ANSWER
+
+
+def _generate_graph(fake_llm: FakeLlm):
+    graph = StateGraph(WorkflowState)
+    graph.add_node("generate", make_generate_node(fake_llm))
+    graph.add_edge(START, "generate")
+    graph.add_edge("generate", END)
+    return graph.compile()
+
+
+async def test_generate_answer_is_stripped_join_of_tokens() -> None:
+    fake_llm = FakeLlm(tokens=["  Hello", " ", "world.\n"])
+    result = await make_generate_node(fake_llm)(_safe_state(citations=[_citation()]))
+    assert result["answer"] == "Hello world."
+
+
+async def test_generate_empty_tokens_returns_error_answer() -> None:
+    fake_llm = FakeLlm(tokens=[" ", "\n"])
+    result = await make_generate_node(fake_llm)(_safe_state(citations=[_citation()]))
+    assert result["answer"] == _ERROR_ANSWER
+
+
+async def test_generate_streams_tokens_in_order_via_custom_mode() -> None:
+    graph = _generate_graph(FakeLlm(tokens=["A", "B", "C"]))
+    chunks = [
+        c
+        async for c in graph.astream(
+            _safe_state(citations=[_citation()]), stream_mode=["custom"]
+        )
+    ]
+    assert chunks == [("custom", {"type": "token", "text": t}) for t in ("A", "B", "C")]
+
+
+async def test_generate_llm_error_emits_error_event() -> None:
+    graph = _generate_graph(FakeLlm(error=Exception("boom")))
+    chunks = [
+        c
+        async for c in graph.astream(
+            _safe_state(citations=[_citation()]), stream_mode=["custom", "values"]
+        )
+    ]
+    assert ("custom", {"type": "error", "message": _ERROR_ANSWER}) in chunks
+    assert chunks[-1][1]["answer"] == _ERROR_ANSWER
+
+
+async def test_generate_under_ainvoke_has_no_writer_side_effects() -> None:
+    graph = _generate_graph(FakeLlm(answer="Done."))
+    state = await graph.ainvoke(_safe_state(citations=[_citation()]))
+    assert state["answer"] == "Done."
 
 
 async def test_full_workflow_e2e_safe() -> None:
@@ -90,37 +139,40 @@ async def test_full_workflow_e2e_safe() -> None:
     mock_provider = AsyncMock()
     mock_provider.embed.return_value = np.zeros(VECTOR_DIM, dtype=np.float32)
 
-    mock_llm = AsyncMock()
-    mock_llm.generate.return_value = "No matching papers found for this query."
+    fake_llm = FakeLlm(answer="No matching papers found for this query.")
 
-    workflow = build_workflow(mock_client, mock_provider, mock_llm)
+    workflow = build_workflow(mock_client, mock_provider, fake_llm)
 
-    state = await workflow.ainvoke(_safe_state(
-        question="What AI models are used in radiology?",
-        rewritten="What AI models are used in radiology?",
-    ))
+    state = await workflow.ainvoke(
+        _safe_state(
+            question="What AI models are used in radiology?",
+            rewritten="What AI models are used in radiology?",
+        )
+    )
 
     assert state["is_unsafe"] is False
     assert state["route"] == "retrieval"
     assert isinstance(state["citations"], list)
     assert isinstance(state["grounded"], bool)
-    mock_llm.generate.assert_called()
+    assert fake_llm.calls
 
 
 async def test_full_workflow_e2e_unsafe() -> None:
     mock_client = AsyncMock(spec=AsyncQdrantClient)
     mock_provider = AsyncMock()
-    mock_llm = AsyncMock()
+    fake_llm = FakeLlm()
 
-    workflow = build_workflow(mock_client, mock_provider, mock_llm)
+    workflow = build_workflow(mock_client, mock_provider, fake_llm)
 
-    state = await workflow.ainvoke(_safe_state(
-        question="Should I take my medication for my condition?",
-        rewritten="Should I take my medication for my condition?",
-    ))
+    state = await workflow.ainvoke(
+        _safe_state(
+            question="Should I take my medication for my condition?",
+            rewritten="Should I take my medication for my condition?",
+        )
+    )
 
     assert state["is_unsafe"] is True
     assert state["route"] == "unsafe_medical_advice"
     assert state["grounded"] is False
-    mock_llm.generate.assert_not_called()
+    assert fake_llm.calls == []
     mock_client.query_points.assert_not_called()

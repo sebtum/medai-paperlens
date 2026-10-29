@@ -1,20 +1,22 @@
 from app.workflow.state import WorkflowState
 
-_UNSAFE_PATTERNS: frozenset[str] = frozenset({
-    "diagnose me",
-    "my symptoms",
-    "should i take",
-    "can i take",
-    "prescribe me",
-    "my prescription",
-    "medical advice",
-    "treat me",
-    "my condition",
-    "my illness",
-    "my disease",
-    "am i sick",
-    "i have been diagnosed",
-})
+_UNSAFE_PATTERNS: frozenset[str] = frozenset(
+    {
+        "diagnose me",
+        "my symptoms",
+        "should i take",
+        "can i take",
+        "prescribe me",
+        "my prescription",
+        "medical advice",
+        "treat me",
+        "my condition",
+        "my illness",
+        "my disease",
+        "am i sick",
+        "i have been diagnosed",
+    }
+)
 
 
 def classify_node(state: WorkflowState) -> dict:
