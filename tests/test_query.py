@@ -4,6 +4,7 @@ import httpx
 import numpy as np
 import pytest
 from asgi_lifespan import LifespanManager
+from conftest import FakeLlm
 from httpx import ASGITransport, AsyncClient
 
 from app.llm.factory import get_llm_provider
@@ -22,12 +23,11 @@ async def mocked_app():
     mock_provider = AsyncMock()
     mock_provider.embed.return_value = np.zeros(VECTOR_DIM, dtype=np.float32)
 
-    mock_ollama = AsyncMock()
-    mock_ollama.generate.return_value = "Mocked answer."
+    fake_llm = FakeLlm(answer="Mocked answer.")
 
     app.dependency_overrides[get_async_client] = lambda: mock_client
     app.dependency_overrides[get_embedding_provider] = lambda: mock_provider
-    app.dependency_overrides[get_llm_provider] = lambda: mock_ollama
+    app.dependency_overrides[get_llm_provider] = lambda: fake_llm
 
     async with LifespanManager(app) as manager:
         yield manager.app

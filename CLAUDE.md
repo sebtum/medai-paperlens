@@ -70,20 +70,20 @@ Streamlit UI → FastAPI Backend → LangGraph Workflow
                                            → Citation-grounded response
 ```
 
-### Current implementation (Phase 6 complete)
+### Current implementation (Phase 7 complete)
 
 **API layer**
 - `app/main.py` — FastAPI app factory; manages the active LLM provider's lifespan via `make_llm_provider()`; mounts `health_router`, `model_router`, and `query_router`; registers `UnsafeQueryError` exception handler.
 - `app/api/routes/health.py` — `GET /health` endpoint.
 - `app/api/routes/model.py` — `GET /model/status`. Reports whether the active LLM provider's model is warm.
-- `app/api/routes/query.py` — `POST /query`. Builds and invokes the LangGraph workflow, returns `QueryResponse`.
+- `app/api/routes/query.py` — `POST /query` (builds and `ainvoke`s the LangGraph workflow, returns `QueryResponse`) and `POST /query/stream` (SSE via `EventSourceResponse`; `astream(["tasks","custom","values"])` run in its own task so a client disconnect cancels the graph and LLM; ADR-0017).
 - `app/core/exceptions.py` — `UnsafeQueryError`.
-- `app/models/query.py` — `QueryRequest`, `Citation`, `QueryResponse`.
+- `app/models/query.py` — `QueryRequest`, `Citation`, `QueryResponse`, SSE event payloads (`StepStartEvent`, `StepEndEvent`, `CitationsEvent`, `TokenEvent`, `ErrorEvent`).
 
 **LLM layer**
-- `app/llm/base.py` — `LlmProvider` Protocol with `generate()` and `generate_structured()`; `ModelStatusProvider` Protocol with `model`, `warmup()`, `is_model_warm()`.
-- `app/llm/ollama.py` — `OllamaClient`: async context manager; `generate()` calls `/api/generate` (string prompt) or `/api/chat` (message list); default model `qwen3:0.6b` via `OLLAMA_MODEL` env var, thinking mode off by default via `OLLAMA_THINK`.
-- `app/llm/gemini.py` — `GeminiClient`: opt-in application provider over the `google-genai` SDK (optional extra); satisfies `LlmProvider` and `ModelStatusProvider` structurally.
+- `app/llm/base.py` — `LlmProvider` Protocol with `generate()`, `stream()` and `generate_structured()` (ADR-0018); `ModelStatusProvider` Protocol with `model`, `warmup()`, `is_model_warm()`.
+- `app/llm/ollama.py` — `OllamaClient`: async context manager; `generate()` and `stream()` (NDJSON, never yields `thinking`) call `/api/generate` (string prompt) or `/api/chat` (message list); default model `qwen3:0.6b` via `OLLAMA_MODEL` env var, thinking mode off by default via `OLLAMA_THINK`.
+- `app/llm/gemini.py` — `GeminiClient`: opt-in application provider over the `google-genai` SDK (optional extra); satisfies `LlmProvider` (incl. `stream()`) and `ModelStatusProvider` structurally. `generate`/`stream` on both clients are `@traceable` — LangSmith tracing is opt-in via `LANGSMITH_TRACING=true`, a no-op otherwise (ADR-0019).
 - `app/llm/factory.py` — `make_llm_provider()` dispatches on `LLM_PROVIDER` (`ollama` default, `gemini` opt-in); `get_llm_provider()` is the FastAPI dependency reading `app.state.llm`.
 
 **Workflow layer** (LangGraph)
@@ -92,7 +92,7 @@ Streamlit UI → FastAPI Backend → LangGraph Workflow
 - `app/workflow/classify.py` — `classify_node`: phrase-pattern safety filter (frozenset of unsafe patterns); sets `is_unsafe` / `route`.
 - `app/workflow/rewrite.py` — `make_rewrite_node(llm)`: Ollama-backed query rewriter; falls back to original question on LLM error.
 - `app/workflow/retrieve.py` — `make_retrieve_node(client, provider)`: embeds rewritten query, runs Qdrant search, populates `citations` and `confidence`.
-- `app/workflow/generate.py` — `make_generate_node(llm)`: synthesises answer from evidence via Ollama; returns error message on LLM failure.
+- `app/workflow/generate.py` — `make_generate_node(llm)`: synthesises answer from evidence via `llm.stream()` (always streams; tokens go to the LangGraph stream writer, a no-op under `ainvoke`); on LLM failure emits an `error` event and returns an error message.
 - `app/workflow/validate.py` — `validate_node`: sets `grounded = True` when citations exist and answer is non-empty.
 
 **Retrieval layer**
@@ -121,13 +121,19 @@ Do not add the next layer until the current one is stable:
 4. ~~Streamlit UI~~ ✓
 5. ~~Docker Compose for full-stack local run~~ ✓
 
-Phases 7–11 (streaming, full-text ingestion, retrieval eval, rerank/hybrid, generation eval) are ordered in [`docs/roadmap.md`](docs/roadmap.md). Next: Phase 7 (streaming). Write each phase's ADRs during that phase's planning, not in advance.
+Phases 7–11 (streaming, full-text ingestion, retrieval eval, rerank/hybrid, generation eval) are ordered in [`docs/roadmap.md`](docs/roadmap.md). Phase 7 (streaming) is executed; next is its Verify stage, then Phase 8. Write each phase's ADRs during that phase's planning, not in advance.
+
+### Working process
+
+Each phase runs in four stages: **Discuss → Plan → Execute → Verify**, each in a fresh session and each handing off through a short file in `docs/phases/NN-name/`. Stages, gates and templates are in [`docs/workflow.md`](docs/workflow.md). Small changes (no new ADR, dependency or shared interface, ≈ ≤ 3 files) skip the process: do them directly, then run the quality gates.
 
 ### API contract
 
 `GET /health` → `{"status": "ok"}`
 
 `POST /query` — accepts `{"question": "..."}`, returns `{"answer", "citations", "confidence", "grounded", "debug"}`.
+
+`POST /query/stream` — same body; SSE events `step_start {node}`, `step_end {node, elapsed_ms}`, `citations {citations, confidence}`, `token {text}`, `error {message}`, `final` (= the `/query` response, authoritative). Unsafe queries emit no `token`; `final` has `grounded: false`.
 
 Unsafe medical queries (diagnosis, treatment, patient advice) must return a refusal response with `"grounded": false` and `"route": "unsafe_medical_advice"` in debug. Research questions about AI models *performing* diagnosis are allowed — only first-person personal-advice patterns are refused.
 

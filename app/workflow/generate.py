@@ -1,6 +1,9 @@
 import logging
 import time
 
+from langgraph.config import get_stream_writer
+from langgraph.types import StreamWriter
+
 from app.llm.base import LlmProvider
 from app.workflow.state import WorkflowState
 
@@ -16,6 +19,14 @@ _PROMPT = (
 _ERROR_ANSWER = "An error occurred while generating the answer. Please try again later."
 
 
+def _stream_writer() -> StreamWriter:
+    """LangGraph custom-event writer; a no-op when called outside a graph run."""
+    try:
+        return get_stream_writer()
+    except RuntimeError, KeyError:
+        return lambda _chunk: None
+
+
 def make_generate_node(llm: LlmProvider):
     async def generate_node(state: WorkflowState) -> dict:
         if not state["citations"]:
@@ -27,15 +38,21 @@ def make_generate_node(llm: LlmProvider):
         )
         logger.info("generate_node: start (%d citations)", len(state["citations"]))
         t0 = time.monotonic()
+        write = _stream_writer()
+        tokens: list[str] = []
         try:
-            answer = (await llm.generate(
+            async for token in llm.stream(
                 _PROMPT.format(question=state["question"], evidence=evidence_text)
-            )).strip()
+            ):
+                tokens.append(token)
+                write({"type": "token", "text": token})
         except Exception:
             logger.exception(
                 "LLM-Generierung fehlgeschlagen (%.1fs)", time.monotonic() - t0
             )
+            write({"type": "error", "message": _ERROR_ANSWER})
             return {"answer": _ERROR_ANSWER}
+        answer = "".join(tokens).strip()
 
         elapsed = time.monotonic() - t0
         if not answer:

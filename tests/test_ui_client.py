@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -10,6 +11,8 @@ from ui.app import (
     call_query_api,
     check_backend_health,
     check_model_status,
+    parse_sse_lines,
+    stream_query_api,
 )
 
 _VALID_RESULT: QueryResult = {
@@ -59,6 +62,7 @@ def _make_mock_client(response_json: dict, status_code: int = 200) -> AsyncMock:
 
 
 # --- call_query_api ---
+
 
 async def test_call_query_api_returns_result_on_200() -> None:
     mock = _make_mock_client(_VALID_RESULT)
@@ -110,6 +114,7 @@ async def test_call_query_api_refusal_returns_result_not_none() -> None:
 
 # --- check_backend_health ---
 
+
 async def test_check_backend_health_returns_true_on_200() -> None:
     mock = _make_mock_client({"status": "ok"}, 200)
     with patch("ui.app.httpx.AsyncClient", return_value=mock):
@@ -125,6 +130,7 @@ async def test_check_backend_health_returns_false_on_connect_error() -> None:
 
 
 # --- check_model_status ---
+
 
 async def test_check_model_status_returns_cold_status() -> None:
     mock = _make_mock_client(_COLD_STATUS)
@@ -160,6 +166,7 @@ async def test_check_model_status_returns_none_on_http_error() -> None:
 
 # --- _build_spinner_text ---
 
+
 def test_build_spinner_text_warm_model() -> None:
     assert _build_spinner_text(_WARM_STATUS) == "Querying…"
 
@@ -183,3 +190,75 @@ def test_build_spinner_text_cold_no_estimate() -> None:
     text = _build_spinner_text(status)
     assert "qwen3.5:4b" in text
     assert "min" not in text
+
+
+# --- parse_sse_lines ---
+
+
+def test_parse_sse_lines_yields_event_and_json() -> None:
+    lines = ["event: step_start", 'data: {"node": "rewrite"}', ""]
+    assert list(parse_sse_lines(lines)) == [("step_start", {"node": "rewrite"})]
+
+
+def test_parse_sse_lines_joins_multiline_data() -> None:
+    lines = ["event: token", 'data: {"text":', 'data: "hi"}', ""]
+    assert list(parse_sse_lines(lines)) == [("token", {"text": "hi"})]
+
+
+def test_parse_sse_lines_ignores_keepalive_comments() -> None:
+    lines = [": ping", "", "event: token", 'data: {"text": "a"}', "", ": ping", ""]
+    assert list(parse_sse_lines(lines)) == [("token", {"text": "a"})]
+
+
+def test_parse_sse_lines_flushes_event_without_trailing_blank_line() -> None:
+    lines = ["event: final", 'data: {"answer": "x"}']
+    assert list(parse_sse_lines(lines)) == [("final", {"answer": "x"})]
+
+
+# --- stream_query_api ---
+
+
+def test_stream_query_api_yields_events_in_order() -> None:
+    frames = [
+        ("step_start", {"node": "rewrite"}),
+        (None, None),
+        ("token", {"text": "hi"}),
+        ("final", {"answer": "hi"}),
+    ]
+    body = "".join(
+        ": ping" + chr(10) * 2
+        if event is None
+        else f"event: {event}" + chr(10) + "data: " + json.dumps(data) + chr(10) * 2
+        for event, data in frames
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/query/stream"
+        return httpx.Response(
+            200, content=body, headers={"content-type": "text/event-stream"}
+        )
+
+    events = list(stream_query_api("q", transport=httpx.MockTransport(handler)))
+    assert [e for e, _ in events] == ["step_start", "token", "final"]
+
+
+def test_stream_query_api_maps_http_error() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(500))
+    events = list(stream_query_api("q", transport=transport))
+    assert events == [("client_error", {"error": "http_error"})]
+
+
+def test_stream_query_api_maps_connect_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    events = list(stream_query_api("q", transport=httpx.MockTransport(handler)))
+    assert events == [("client_error", {"error": "connect_error"})]
+
+
+def test_stream_query_api_maps_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    events = list(stream_query_api("q", transport=httpx.MockTransport(handler)))
+    assert events == [("client_error", {"error": "timeout"})]

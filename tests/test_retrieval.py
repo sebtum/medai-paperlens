@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 from asgi_lifespan import LifespanManager
+from conftest import FakeLlm
 from httpx import ASGITransport, AsyncClient
 from qdrant_client.models import CollectionDescription, CollectionsResponse
 
@@ -42,26 +43,27 @@ def mock_model() -> MagicMock:
 
 
 @pytest.fixture
-def mock_ollama() -> AsyncMock:
-    ollama = AsyncMock()
-    ollama.generate.return_value = "Mocked answer."
-    return ollama
+def fake_llm() -> FakeLlm:
+    return FakeLlm(answer="Mocked answer.")
 
 
 @pytest.fixture
 async def http_client(
-    async_qdrant: AsyncMock, mock_ollama: AsyncMock
+    async_qdrant: AsyncMock, fake_llm: FakeLlm
 ) -> AsyncGenerator[AsyncClient]:
     mock_provider = AsyncMock()
     mock_provider.embed.return_value = np.zeros(VECTOR_DIM, dtype=np.float32)
 
     app.dependency_overrides[get_async_client] = lambda: async_qdrant
     app.dependency_overrides[get_embedding_provider] = lambda: mock_provider
-    app.dependency_overrides[get_llm_provider] = lambda: mock_ollama
+    app.dependency_overrides[get_llm_provider] = lambda: fake_llm
 
-    async with LifespanManager(app) as manager, AsyncClient(
-        transport=ASGITransport(app=manager.app), base_url="http://test"
-    ) as client:
+    async with (
+        LifespanManager(app) as manager,
+        AsyncClient(
+            transport=ASGITransport(app=manager.app), base_url="http://test"
+        ) as client,
+    ):
         yield client
 
     app.dependency_overrides.clear()
@@ -275,9 +277,7 @@ class TestQueryRoute:
         assert data["citations"] == []
         assert data["confidence"] == 0.0
 
-    async def test_unsafe_query_still_refused(
-        self, http_client: AsyncClient
-    ) -> None:
+    async def test_unsafe_query_still_refused(self, http_client: AsyncClient) -> None:
         response = await http_client.post(
             "/query", json={"question": "Should I take aspirin for my symptoms?"}
         )

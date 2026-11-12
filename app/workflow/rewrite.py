@@ -20,9 +20,9 @@ def make_rewrite_node(llm: LlmProvider):
         logger.info("rewrite_node: start")
         t0 = time.monotonic()
         try:
-            rewritten = (await llm.generate(
-                _PROMPT.format(question=state["question"])
-            )).strip()
+            rewritten = (
+                await llm.generate(_PROMPT.format(question=state["question"]))
+            ).strip()
         except Exception:
             logger.exception("Query rewrite failed, using original question")
             rewritten = ""

@@ -20,10 +20,12 @@ def make_retrieve_node(client: AsyncQdrantClient, provider: EmbeddingProvider):
 
         try:
             citations, confidence = await search(
-                vector, client, top_k=5,
+                vector,
+                client,
+                top_k=5,
                 score_threshold=state["score_threshold"],
             )
-        except (ConnectionError, TimeoutError, OSError):
+        except ConnectionError, TimeoutError, OSError:
             logger.exception("Qdrant search failed")
             return {"citations": [], "confidence": 0.0}
 

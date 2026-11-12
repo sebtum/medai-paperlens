@@ -56,7 +56,7 @@ These shape more than one phase, so they are settled up front.
 
 | # | Phase | Goal | Expected ADR(s) |
 |---|---|---|---|
-| 7 | Streaming | Tokens and step status (rewriting, retrieving, generating) are visible in the UI as they happen. `POST /query` stays unchanged for tests and eval. Opt-in LangSmith tracing for per-node latency and inputs/outputs. | SSE `POST /query/stream` endpoint; `stream()` on the LLM provider interface; LangSmith for observability and evaluation |
+| 7 ✓ | Streaming | Tokens and step status (rewriting, retrieving, generating) are visible in the UI as they happen. `POST /query` stays unchanged for tests and eval. Opt-in LangSmith tracing for per-node latency and inputs/outputs. | SSE `POST /query/stream` endpoint; `stream()` on the LLM provider interface; LangSmith for observability and evaluation |
 | 8 | Full-text ingestion | Parse PDFs (Docling), chunk by document structure, upgrade the embedding model, and show section/page citations. | Parser choice (Docling vs PyMuPDF4LLM); chunking strategy; embedding model |
 | 9 | Retrieval evaluation | Golden set of 40–60 questions (Gemini-drafted, human-filtered) stored as a LangSmith dataset. Each retrieval configuration runs as a LangSmith experiment. Recall@k, MRR, and nDCG@k are custom evaluator functions passed to `evaluate()`, since there are no built-in metrics for paper + section labels. | Golden-set methodology; dataset versioning |
 | 10 | Rerank and hybrid search | Retrieve top 20, rerank with a cross-encoder, keep top 5. Optionally BM25 + dense fusion (RRF) in Qdrant. Each change is justified by Phase 9 numbers. | Reranker model; whether hybrid search is worth it |
@@ -74,6 +74,19 @@ Decided in each phase's own discussion, not now:
 
 - Chunk size and overlap (Phase 8)
 - `bge-small-en-v1.5` vs `bge-base-en-v1.5` (Phase 8, confirmed by Phase 9 metrics)
+- **Domain-specific embedding model (Phase 8, measured in Phase 9).** The Phase 8
+  default is a general model (`bge-*`). When evaluation starts, also test a model
+  trained on biomedical text or literature and compare it on the same golden set
+  instead of assuming it wins. Candidates to check (confirm they still exist and
+  check their licences first):
+  - `MedCPT`: trained on PubMed search logs. It is asymmetric, with separate query
+    and article encoders, so `embed()` would need a query/document split.
+  - PubMedBERT-based sentence embeddings (for example `NeuML/pubmedbert-base-embeddings`).
+  Things the choice depends on: the input unit (abstracts versus full-text chunks,
+  mind the 512-token limit), the vector dimension (`VECTOR_DIM` and the Qdrant
+  collection change, so a re-ingest with `--overwrite` is needed), and CPU latency
+  in the local-first setup. The corpus is only 10 papers, so differences may be
+  within noise until it grows.
 - Whether query rewriting helps retrieval (measured in Phase 9)
 - Reranker candidates: `ms-marco-MiniLM-L-6-v2`, `bge-reranker-base`, optionally a
   Jina reranker (non-commercial license) (Phase 10)
