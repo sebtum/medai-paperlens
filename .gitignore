@@ -34,3 +34,8 @@ build/
 
 # Benchmark harness working output (committed evidence lives under docs/benchmarks/)
 /benchmark_results.csv
+
+# Phase 8 corpus artefacts: downloaded PDFs and the parsed cache (reproduced via scripts)
+/data/pdfs/
+/data/parsed/*
+!/data/parsed/.gitkeep

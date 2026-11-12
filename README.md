@@ -96,6 +96,11 @@ the Streamlit UI, all wired together automatically. First run takes a few
 minutes (model pull); later runs are fast since the Qdrant/Ollama/embedding
 caches persist in Docker volumes.
 
+The ingest job mounts `data/parsed/` read-only. On a fresh clone that folder is
+empty, so only the abstracts are indexed (one chunk per paper). For full-text
+retrieval, build the parsed cache on the host first; see
+[Full-text corpus](#full-text-corpus).
+
 Once it's up:
 
 - UI: http://localhost:8501
@@ -104,6 +109,35 @@ Once it's up:
 
 Stop everything with `docker compose down` (add `-v` to also wipe the cached
 model/data volumes).
+
+## Full-text corpus
+
+The repository holds only small manifests (`data/papers/*.json`: metadata,
+abstract, versioned `arxiv_id` and `pdf_url`). The full text is built on the
+host in three steps; PDFs and the parsed cache are gitignored.
+
+```powershell
+# 1. Download the arXiv PDFs to data/pdfs/ (skips existing files, --force re-downloads)
+.\.venv\Scripts\python.exe -m scripts.download_papers
+
+# 2. Parse them with Docling into data/parsed/<paper_id>.json
+#    Needs the optional `pdf` extra (uv sync --extra pdf); the first run downloads
+#    the layout and table models, and a paper takes from about a minute to four.
+.\.venv\Scripts\python.exe -m scripts.parse_papers   # --only <paper_id>, --force
+
+# 3. Chunk, embed and index into Qdrant (add --overwrite to re-index from scratch)
+.\.venv\Scripts\python.exe -m scripts.ingest
+```
+
+Parsing runs only on the host: the Docker image has no Docling, only the chunker
+(`docling-core`). A paper without a parsed file falls back to its abstract, with
+a warning. Two papers are indexed from the arXiv preprint rather than the published
+version (`conch`, `cxr_vlm_generation`; see `source_note` in their manifests), so the
+full text may differ from the published paper. Ingest is idempotent: re-running it
+replaces a paper's chunks, and it recreates the collection if the embedding model
+changed. See [ADR-0020](docs/adr/0020-pdf-parser.md),
+[ADR-0021](docs/adr/0021-structure-aware-chunking.md) and
+[ADR-0022](docs/adr/0022-default-embedder-bge-small.md).
 
 ## Running locally (without Docker)
 
@@ -117,7 +151,7 @@ model/data volumes).
 .\.venv\Scripts\streamlit.exe run ui/app.py
 
 # Ingest papers into Qdrant
-.\.venv\Scripts\python.exe scripts/ingest.py
+.\.venv\Scripts\python.exe -m scripts.ingest
 
 # Run tests
 .\.venv\Scripts\pytest.exe tests/
@@ -131,8 +165,16 @@ OLLAMA_MODEL=qwen3:0.6b
 OLLAMA_THINK=false
 LLM_PROVIDER=ollama
 QDRANT_URL=http://localhost:6333
-EMBEDDING_MODEL=all-MiniLM-L6-v2
+EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+OLLAMA_NUM_CTX=8192
 ```
+
+- `EMBEDDING_MODEL`: the embedder for both ingest and queries. The vector size
+  comes from the model. Ingest and the API must use the same value; the API logs
+  a warning at startup if the indexed `embedding_model` differs. Changing it needs a
+  re-ingest (done automatically, since ingest recreates a mismatched collection).
+- `OLLAMA_NUM_CTX`: context window sent to Ollama on every call, warmup included,
+  so the model is not reloaded on the first query. It has to fit the retrieved chunks.
 
 ## Model selection
 
@@ -154,13 +196,16 @@ decision record. A hosted Gemini provider is available opt-in behind
 {
   "answer": "...",
   "citations": [
-    {"title": "...", "authors": ["..."], "year": 2024, "doi": "10.48550/arXiv...", "excerpt": "..."}
+    {"title": "...", "authors": ["..."], "year": 2024, "doi": "10.48550/arXiv...", "excerpt": "...",
+     "paper_id": "maira_2", "section": "Methods > RadFact", "page": 5, "chunk_index": 12}
   ],
   "confidence": 0.87,
   "grounded": true,
   "debug": {"route": "retrieval"}
 }
 ```
+
+Each citation is one retrieved chunk, so several citations can come from the same paper. `paper_id`, `section`, `page` and `chunk_index` are optional (`null` for an abstract-only paper or an old index), and `excerpt` is the chunk text. `confidence` is the top similarity score of the retrieved chunks. It is not a calibrated probability, and its scale depends on the embedding model.
 
 Unsafe personal-advice queries (e.g. "diagnose me", "my symptoms") return a refusal with `"grounded": false`.
 

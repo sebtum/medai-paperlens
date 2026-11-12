@@ -40,8 +40,10 @@ services:
     command: ["python", "scripts/ingest.py"]
     environment:
       QDRANT_URL: http://qdrant:6333
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
     volumes:
       - huggingface_cache:/root/.cache/huggingface
+      - ./data/parsed:/app/data/parsed:ro
     depends_on:
       qdrant:
         condition: service_healthy
@@ -57,6 +59,8 @@ services:
     environment:
       QDRANT_URL: http://qdrant:6333
       OLLAMA_BASE_URL: http://ollama:11434
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     depends_on:

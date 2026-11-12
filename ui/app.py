@@ -3,7 +3,7 @@ import json
 import os
 import time
 from collections.abc import Iterable, Iterator
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import httpx
 import streamlit as st
@@ -26,6 +26,11 @@ class CitationData(TypedDict):
     year: int
     doi: str | None
     excerpt: str
+    # Optional: absent in responses for abstract-only / legacy points.
+    paper_id: NotRequired[str | None]
+    section: NotRequired[str | None]
+    page: NotRequired[int | None]
+    chunk_index: NotRequired[int | None]
 
 
 class QueryResult(TypedDict):
@@ -63,7 +68,7 @@ async def check_model_status() -> ModelStatus | None:
 
 async def call_query_api(
     question: str,
-    score_threshold: float = 0.4,
+    score_threshold: float = 0.6,
 ) -> tuple[QueryResult | None, str | None]:
     try:
         async with httpx.AsyncClient(
@@ -110,7 +115,7 @@ def parse_sse_lines(lines: Iterable[str]) -> Iterator[tuple[str, dict[str, Any]]
 
 def stream_query_api(
     question: str,
-    score_threshold: float = 0.4,
+    score_threshold: float = 0.6,
     transport: httpx.BaseTransport | None = None,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """Yield SSE events from ``POST /query/stream``.
@@ -171,11 +176,11 @@ def run_streamed_query(
                 lines[-1] = f"✅ {label} ({payload['elapsed_ms'] / 1000:.1f} s)"
                 steps_box.markdown("\n\n".join(lines))
             elif event == "citations":
-                titles = [c["title"] for c in payload["citations"]]
+                found = [citation_summary(c) for c in payload["citations"]]
                 citations_box.markdown(
-                    f"**{len(titles)} papers found:** " + "; ".join(titles)
-                    if titles
-                    else "No papers found."
+                    f"**{len(found)} passages found:** " + "; ".join(found)
+                    if found
+                    else "No passages found."
                 )
             elif event == "token":
                 text += payload["text"]
@@ -207,14 +212,38 @@ def _cached_backend_health() -> bool:
     return asyncio.run(check_backend_health())
 
 
+def confidence_text(confidence: float) -> str:
+    """Label for the top retrieval score; it is a similarity, not a probability."""
+    return f"Top similarity score: {confidence:.0%} (not calibrated)"
+
+
 def render_confidence_indicator(confidence: float) -> None:
-    st.progress(confidence, text=f"Confidence: {confidence:.0%}")
+    st.progress(confidence, text=confidence_text(confidence))
+
+
+def citation_summary(citation: CitationData) -> str:
+    """Short ``title — section`` text for the live citations line."""
+    section = citation.get("section")
+    return f"{citation['title']} — {section}" if section else citation["title"]
+
+
+def citation_label(citation: CitationData, index: int) -> str:
+    """Card label ``n. title (year) — section, p. page``; missing parts are left out."""
+    label = f"{index}. {citation['title']} ({citation['year']})"
+    where: list[str] = []
+    if section := citation.get("section"):
+        where.append(section)
+    page = citation.get("page")
+    if page is not None:
+        where.append(f"p. {page}")
+    if where:
+        label += " — " + ", ".join(where)
+    return label
 
 
 def render_citation_card(citation: CitationData, index: int) -> None:
     authors_str = ", ".join(citation["authors"]) if citation["authors"] else "Unknown"
-    label = f"{index}. {citation['title']} ({citation['year']})"
-    with st.expander(label):
+    with st.expander(citation_label(citation, index)):
         st.write(f"**Authors:** {authors_str}")
         if citation["doi"]:
             st.write(f"**DOI:** {citation['doi']}")
@@ -300,7 +329,7 @@ def _chat_zone() -> None:
             "Relevance threshold",
             min_value=0.0,
             max_value=1.0,
-            value=0.4,
+            value=0.6,
             step=0.05,
             help=(
                 "Minimum similarity score for retrieved papers"

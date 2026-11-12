@@ -68,3 +68,7 @@ async def managed_app():
     """App with ASGI lifespan (startup/shutdown) properly executed."""
     async with LifespanManager(app) as manager:
         yield manager.app
+
+
+# Vector size of the mocked embedder; ingestion takes the real one from the model.
+TEST_VECTOR_DIM = 384

@@ -11,13 +11,20 @@ from app.api.routes.model import router as model_router
 from app.api.routes.query import router as query_router
 from app.core.exceptions import UnsafeQueryError
 from app.llm.factory import make_llm_provider
+from app.retrieval.client import get_async_client
+from app.retrieval.consistency import embedding_model_mismatch
+from app.retrieval.embedding import get_model_name
 
 dotenv.load_dotenv()
 logging.getLogger("app").setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    mismatch = await embedding_model_mismatch(get_async_client(), get_model_name())
+    if mismatch:
+        logger.warning("Embedding model mismatch: %s", mismatch)
     async with make_llm_provider() as llm:
         app.state.llm = llm
         app.state.warmup_task = asyncio.create_task(llm.warmup())

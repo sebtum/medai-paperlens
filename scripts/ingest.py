@@ -4,10 +4,14 @@ import os
 import sys
 from pathlib import Path
 
+import dotenv
+
 from app.retrieval.client import get_client
-from app.retrieval.embedding import get_model
+from app.retrieval.embedding import get_model, get_model_name
 from app.retrieval.ingestion import ingest
 
+# Read `.env` like the API does, so both use the same EMBEDDING_MODEL and QDRANT_URL.
+dotenv.load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
@@ -20,6 +24,17 @@ if __name__ == "__main__":
             str(Path(__file__).parent.parent / "data" / "papers"),
         ),
         help="Directory containing paper JSON files (env: PAPERS_DIR).",
+    )
+    parser.add_argument(
+        "--parsed-dir",
+        default=os.getenv(
+            "PARSED_DIR",
+            str(Path(__file__).parent.parent / "data" / "parsed"),
+        ),
+        help=(
+            "Directory with parsed papers from scripts/parse_papers.py; papers "
+            "without one are indexed from their abstract (env: PARSED_DIR)."
+        ),
     )
     parser.add_argument(
         "--overwrite",
@@ -41,8 +56,15 @@ if __name__ == "__main__":
         )
 
     try:
-        count = ingest(papers_dir, get_client(), get_model(), overwrite=args.overwrite)
-        logger.info("Ingested %d papers.", count)
+        count = ingest(
+            papers_dir,
+            get_client(),
+            get_model(),
+            model_name=get_model_name(),
+            parsed_dir=Path(args.parsed_dir),
+            overwrite=args.overwrite,
+        )
+        logger.info("Ingested %d chunks.", count)
     except Exception as exc:
         logger.error("Ingestion failed: %s", exc)
         sys.exit(1)

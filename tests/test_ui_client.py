@@ -5,12 +5,16 @@ import httpx
 import pytest
 
 from ui.app import (
+    CitationData,
     ModelStatus,
     QueryResult,
     _build_spinner_text,
     call_query_api,
     check_backend_health,
     check_model_status,
+    citation_label,
+    citation_summary,
+    confidence_text,
     parse_sse_lines,
     stream_query_api,
 )
@@ -262,3 +266,58 @@ def test_stream_query_api_maps_timeout() -> None:
 
     events = list(stream_query_api("q", transport=httpx.MockTransport(handler)))
     assert events == [("client_error", {"error": "timeout"})]
+
+
+# --- citation labels / confidence text ---
+
+_LEGACY_CITATION: CitationData = {
+    "title": "Med-PaLM M",
+    "authors": ["A. Author"],
+    "year": 2023,
+    "doi": None,
+    "excerpt": "abstract text",
+}
+
+_CHUNK_CITATION: CitationData = {
+    **_LEGACY_CITATION,
+    "paper_id": "med_palm_m",
+    "section": "Methods > Datasets",
+    "page": 4,
+    "chunk_index": 7,
+}
+
+
+def test_citation_label_with_section_and_page() -> None:
+    assert (
+        citation_label(_CHUNK_CITATION, 2)
+        == "2. Med-PaLM M (2023) — Methods > Datasets, p. 4"
+    )
+
+
+def test_citation_label_legacy_citation_has_no_location() -> None:
+    assert citation_label(_LEGACY_CITATION, 1) == "1. Med-PaLM M (2023)"
+
+
+def test_citation_label_null_fields_are_left_out() -> None:
+    nulls: CitationData = {**_LEGACY_CITATION, "section": None, "page": None}
+    assert citation_label(nulls, 1) == "1. Med-PaLM M (2023)"
+
+
+def test_citation_label_section_only_and_page_only() -> None:
+    section_only: CitationData = {**_LEGACY_CITATION, "section": "Abstract"}
+    page_only: CitationData = {**_LEGACY_CITATION, "page": 3}
+    assert citation_label(section_only, 1) == "1. Med-PaLM M (2023) — Abstract"
+    assert citation_label(page_only, 1) == "1. Med-PaLM M (2023) — p. 3"
+
+
+def test_citation_summary_shows_title_and_section() -> None:
+    assert citation_summary(_CHUNK_CITATION) == "Med-PaLM M — Methods > Datasets"
+    assert citation_summary(_LEGACY_CITATION) == "Med-PaLM M"
+
+
+def test_confidence_text_is_not_presented_as_calibrated() -> None:
+    text = confidence_text(0.85)
+    assert "85%" in text
+    assert "similarity" in text
+    assert "not calibrated" in text
+    assert "Confidence" not in text

@@ -21,5 +21,8 @@
 | [0017](0017-sse-query-stream-endpoint.md) | SSE `POST /query/stream` and its event schema | Accepted | |
 | [0018](0018-stream-on-llm-provider.md) | `stream()` on the LLM provider interface | Accepted | Amends 0014 |
 | [0019](0019-langsmith-opt-in-observability.md) | LangSmith for observability and evaluation (opt-in) | Accepted | |
+| [0020](0020-pdf-parser.md) | Docling as the PDF parser for full-text ingestion | Accepted | |
+| [0021](0021-structure-aware-chunking.md) | Chunking with Docling's HybridChunker, chunk/citation identity | Accepted (revised in Execute) | |
+| [0022](0022-default-embedder-bge-small.md) | Default embedder `bge-small-en-v1.5`, dimension from the model | Accepted | Extends 0012 |
 
 See [0000-template.md](0000-template.md) for the ADR format.

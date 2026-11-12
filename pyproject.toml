@@ -5,6 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    # Docling's document model + HybridChunker (ADR-0020/0021). Only docling-core: the
+    # PDF parser itself (`docling`) stays host-only. `[chunking]` because
+    # docling_core.transforms.chunker imports tree_sitter at import time.
+    "docling-core[chunking]>=2.106.0,<3",
     "fastapi>=0.136.1",
     "httpx>=0.28.1",
     "idna>=3.15",       # pinned above CVE-2026-45409
@@ -15,6 +19,9 @@ dependencies = [
     "starlette>=1.3.1", # pinned above PYSEC-2026-161, PYSEC-2026-248/249 (transitive via fastapi)
     "python-dotenv>=1.0.0",
     "streamlit>=1.45.0",
+    # Direct dependency only so [tool.uv.sources] can send it to the CPU index on Linux
+    # (the Docker image): the default CUDA build adds ~1.7 GB of NVIDIA libraries.
+    "torch>=2.14.0,<2.15",  # same version the host venv is tested with
     "uvicorn>=0.46.0",
 ]
 
@@ -23,6 +30,21 @@ dependencies = [
 # extends it with Gemini as an opt-in application provider behind LLM_PROVIDER).
 # Used by app/llm/gemini.py and scripts/llm_bench/providers.py's BenchGeminiClient.
 gemini = ["google-genai>=1.0.0"]
+# Host-only PDF parser for scripts/parse_papers.py (ADR-0020). Never installed in CI or
+# the Docker image; ingestion there needs only docling-core (a main dependency).
+# convert-core and opencv-python-headless are needed for table parsing (T2 spike).
+pdf = [
+    "docling-slim[format-pdf,models-local,convert-core]>=2.150.0",
+    "opencv-python-headless>=4.10.0",
+]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [dependency-groups]
 dev = [

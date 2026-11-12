@@ -1,12 +1,11 @@
 from unittest.mock import AsyncMock
 
 import numpy as np
-from conftest import FakeLlm
+from conftest import TEST_VECTOR_DIM, FakeLlm
 from langgraph.graph import END, START, StateGraph
 from qdrant_client import AsyncQdrantClient
 
 from app.models.query import Citation
-from app.retrieval.ingestion import VECTOR_DIM
 from app.workflow.classify import classify_node
 from app.workflow.generate import _ERROR_ANSWER, make_generate_node
 from app.workflow.graph import build_workflow
@@ -132,12 +131,86 @@ async def test_generate_under_ainvoke_has_no_writer_side_effects() -> None:
     assert state["answer"] == "Done."
 
 
+def _chunk_citation(index: int, excerpt: str = "Body.", **fields) -> Citation:
+    return Citation(
+        title=f"Paper {index}",
+        authors=["A"],
+        year=2024,
+        excerpt=excerpt,
+        **fields,
+    )
+
+
+async def test_generate_evidence_labels_title_section_and_page() -> None:
+    fake_llm = FakeLlm()
+    citations = [
+        _chunk_citation(1, "Alpha.", section="Methods > Datasets", page=4),
+        _chunk_citation(2, "Beta.", section="Results"),  # no page
+        _chunk_citation(3, "Gamma.", page=7),  # no section
+        _chunk_citation(4, "Delta."),  # abstract-only citation
+    ]
+
+    await make_generate_node(fake_llm)(_safe_state(citations=citations))
+
+    (prompt,) = fake_llm.calls
+    assert isinstance(prompt, str)
+    assert "[1] Paper 1 — Methods > Datasets (p. 4)\nAlpha." in prompt
+    assert "[2] Paper 2 — Results\nBeta." in prompt
+    assert "[3] Paper 3 (p. 7)\nGamma." in prompt
+    assert "[4] Paper 4\nDelta." in prompt
+
+
+async def test_generate_guard_drops_whole_lowest_ranked_items(caplog) -> None:
+    fake_llm = FakeLlm()
+    excerpts = [f"E{i} " + "x" * 296 for i in range(1, 6)]  # ~100 tokens per item
+    citations = [_chunk_citation(i + 1, e) for i, e in enumerate(excerpts)]
+
+    with caplog.at_level("WARNING"):
+        await make_generate_node(fake_llm, evidence_budget_tokens=300)(
+            _safe_state(citations=citations)
+        )
+
+    (prompt,) = fake_llm.calls
+    assert isinstance(prompt, str)
+    kept = [i for i, e in enumerate(excerpts, 1) if e in prompt]
+    assert kept == [1, 2]  # a prefix: the top-ranked items survive
+    assert all(f"[{i}]" not in prompt for i in (3, 4, 5))
+    assert any("dropped 3 of 5" in r.getMessage() for r in caplog.records)
+
+
+async def test_generate_guard_never_cuts_an_item() -> None:
+    fake_llm = FakeLlm()
+    excerpt = "start " + "y" * 600 + " end"
+
+    await make_generate_node(fake_llm, evidence_budget_tokens=10)(
+        _safe_state(citations=[_chunk_citation(1, excerpt)])
+    )
+
+    # Over budget on its own, but the top item is kept whole rather than cut or dropped.
+    (prompt,) = fake_llm.calls
+    assert isinstance(prompt, str)
+    assert excerpt in prompt
+
+
+async def test_generate_guard_is_silent_when_evidence_fits(caplog) -> None:
+    fake_llm = FakeLlm()
+    citations = [_chunk_citation(i, "short") for i in range(1, 6)]
+
+    with caplog.at_level("WARNING"):
+        await make_generate_node(fake_llm)(_safe_state(citations=citations))
+
+    (prompt,) = fake_llm.calls
+    assert isinstance(prompt, str)
+    assert all(f"[{i}] Paper {i}" in prompt for i in range(1, 6))
+    assert not caplog.records
+
+
 async def test_full_workflow_e2e_safe() -> None:
     mock_client = AsyncMock(spec=AsyncQdrantClient)
     mock_client.query_points.return_value.points = []
 
     mock_provider = AsyncMock()
-    mock_provider.embed.return_value = np.zeros(VECTOR_DIM, dtype=np.float32)
+    mock_provider.embed.return_value = np.zeros(TEST_VECTOR_DIM, dtype=np.float32)
 
     fake_llm = FakeLlm(answer="No matching papers found for this query.")
 

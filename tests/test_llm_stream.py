@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from app.llm.gemini import GeminiClient
-from app.llm.ollama import OllamaClient
+from app.llm.ollama import OllamaClient, make_ollama_client
 
 
 def _ndjson(*chunks: dict) -> bytes:
@@ -92,6 +92,77 @@ async def test_ollama_stream_requires_context_manager():
     client = OllamaClient("http://ollama", "m")
     with pytest.raises(RuntimeError):
         _ = [t async for t in client.stream("hi")]
+
+
+def _num_ctx_client(handler, num_ctx: int | None = 8192) -> OllamaClient:
+    client = OllamaClient("http://ollama", "qwen3:0.6b", think=False, num_ctx=num_ctx)
+    client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return client
+
+
+async def test_ollama_num_ctx_is_sent_on_stream_and_generate():
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        if payloads[-1]["stream"]:
+            return httpx.Response(200, content=_ndjson({"response": "x"}))
+        return httpx.Response(200, json={"response": "x"})
+
+    client = _num_ctx_client(handler)
+    _ = [t async for t in client.stream("hi", temperature=0.1)]
+    await client.generate("hi")
+
+    assert payloads[0]["options"] == {"num_ctx": 8192, "temperature": 0.1}
+    assert payloads[1]["options"] == {"num_ctx": 8192}
+
+
+async def test_ollama_explicit_kwarg_overrides_num_ctx():
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"response": "x"})
+
+    await _num_ctx_client(handler).generate("hi", num_ctx=2048)
+
+    assert seen["payload"]["options"] == {"num_ctx": 2048}
+
+
+async def test_ollama_warmup_sends_the_same_num_ctx():
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={})
+
+    await _num_ctx_client(handler, num_ctx=4096).warmup()
+
+    assert seen["url"] == "http://ollama/api/generate"
+    assert seen["payload"]["options"] == {"num_ctx": 4096}
+    assert seen["payload"]["keep_alive"] == -1
+
+
+async def test_ollama_without_num_ctx_sends_no_num_ctx():
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"response": "x"})
+
+    await _num_ctx_client(handler, num_ctx=None).generate("hi")
+
+    assert "num_ctx" not in seen["payload"]["options"]
+
+
+def test_make_ollama_client_reads_num_ctx(monkeypatch):
+    monkeypatch.delenv("OLLAMA_NUM_CTX", raising=False)
+    assert make_ollama_client()._num_ctx == 8192
+    monkeypatch.setenv("OLLAMA_NUM_CTX", "16384")
+    assert make_ollama_client()._num_ctx == 16384
+    monkeypatch.setenv("OLLAMA_NUM_CTX", "")
+    assert make_ollama_client()._num_ctx == 8192
 
 
 class _FakeChunk:
