@@ -130,7 +130,7 @@ Do not add the next layer until the current one is stable:
 4. ~~Streamlit UI~~ ✓
 5. ~~Docker Compose for full-stack local run~~ ✓
 
-Phases 7–11 (streaming, full-text ingestion, retrieval eval, rerank/hybrid, generation eval) are ordered in [`docs/roadmap.md`](docs/roadmap.md). Phase 7 (streaming) is merged (PR #11). Phase 8 (full-text ingestion) is executed; next is its Verify stage, then Phase 9. Write each phase's ADRs during that phase's planning, not in advance.
+Phases 7–11 (streaming, full-text ingestion, retrieval eval, rerank/hybrid, generation eval) are ordered in [`docs/roadmap.md`](docs/roadmap.md). Phase 7 (streaming) is merged (PR #11). Phase 8 (full-text ingestion) is verified (PR pending merge); next is Phase 9. Write each phase's ADRs during that phase's planning, not in advance.
 
 ### Working process
 
