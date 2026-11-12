@@ -121,16 +121,19 @@ State is a `WorkflowState` TypedDict passed between nodes.
 
 ### Retrieval Layer
 
-Searches a controlled corpus of 10 public medical AI papers.
+Searches a controlled corpus of 10 public medical AI papers, indexed as full-text chunks
+(about 595 in total). PDFs are parsed on the host with Docling into `data/parsed/`; ingest
+chunks them with Docling's HybridChunker and indexes one Qdrant point per chunk
+(ADR-0020, ADR-0021). Without a parsed file a paper falls back to its abstract.
 
 ```text
 question
- → embed via SentenceTransformer (all-MiniLM-L6-v2 default)
+ → embed via SentenceTransformer (BAAI/bge-small-en-v1.5 default)
  → Qdrant top-k cosine search
  → list[Citation] + confidence score
 ```
 
-Retrieved chunks include citation metadata (title, source URL, excerpt).
+Each retrieved chunk becomes one citation with paper metadata (title, authors, year, DOI), section path, page, chunk index and the chunk text as excerpt.
 
 ### LLM Provider
 

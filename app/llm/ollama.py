@@ -10,12 +10,24 @@ from langsmith import traceable
 
 from app.llm.base import T, join_chunks
 
+# Context window sent on every call (Phase 8 plan U5: full-text chunks make prompts
+# longer than Ollama's default). The same value must go into warmup, or Ollama reloads
+# the model on the first real query.
+DEFAULT_NUM_CTX = 8192
+
 
 class OllamaClient:
-    def __init__(self, base_url: str, model: str, think: bool | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        think: bool | None = None,
+        num_ctx: int | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._think = think
+        self._num_ctx = num_ctx
         self._http: httpx.AsyncClient | None = None
 
     @property
@@ -38,6 +50,13 @@ class OllamaClient:
             await self._http.aclose()
             self._http = None
 
+    def _options(self, overrides: dict[str, Any]) -> dict[str, Any]:
+        """Client-level options, overridden by explicit per-call kwargs."""
+        base: dict[str, Any] = {}
+        if self._num_ctx is not None:
+            base["num_ctx"] = self._num_ctx
+        return {**base, **overrides}
+
     def _build_request(
         self,
         prompt: str | Sequence[Mapping[str, str]],
@@ -48,7 +67,7 @@ class OllamaClient:
         payload: dict[str, Any] = {
             "model": self._model,
             "stream": stream,
-            "options": options,
+            "options": self._options(options),
         }
         if isinstance(prompt, str):
             path = "/api/generate"
@@ -110,6 +129,7 @@ class OllamaClient:
                     "prompt": "",
                     "stream": False,
                     "keep_alive": -1,
+                    "options": self._options({}),
                 },
                 timeout=300.0,
             )
@@ -146,4 +166,5 @@ def make_ollama_client() -> OllamaClient:
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     model = os.environ.get("OLLAMA_MODEL", "qwen3:0.6b")
     think = os.environ.get("OLLAMA_THINK", "false").strip().lower() == "true"
-    return OllamaClient(base_url, model, think=think)
+    num_ctx = int(os.environ.get("OLLAMA_NUM_CTX") or DEFAULT_NUM_CTX)
+    return OllamaClient(base_url, model, think=think, num_ctx=num_ctx)

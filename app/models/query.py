@@ -2,10 +2,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+# Provisional, set in Phase 8 T12 for bge-small: off-topic top-1 scores were
+# 0.44-0.53, on-topic top-5 scores 0.74-0.92. Phase 9 tunes it.
+DEFAULT_SCORE_THRESHOLD = 0.6
+
 
 class QueryRequest(BaseModel):
     question: str
-    score_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+    score_threshold: float = Field(default=DEFAULT_SCORE_THRESHOLD, ge=0.0, le=1.0)
 
     @field_validator("question")
     @classmethod
@@ -21,6 +25,11 @@ class Citation(BaseModel):
     year: int
     doi: str | None = None
     excerpt: str
+    # Chunk provenance (ADR-0021); optional, as abstract-only payloads lack them.
+    paper_id: str | None = None
+    section: str | None = None
+    page: int | None = None
+    chunk_index: int | None = None
 
 
 class QueryResponse(BaseModel):

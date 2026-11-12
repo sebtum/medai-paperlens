@@ -12,3 +12,5 @@ plan_*.md
 docs/
 tests/
 .claude/
+data/pdfs/
+data/parsed/

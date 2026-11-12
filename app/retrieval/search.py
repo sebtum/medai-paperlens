@@ -4,17 +4,26 @@ import numpy as np
 import numpy.typing as npt
 from qdrant_client import AsyncQdrantClient
 
-from app.models.query import Citation
+from app.models.query import DEFAULT_SCORE_THRESHOLD, Citation
 from app.retrieval.ingestion import COLLECTION_NAME
 
 logger = logging.getLogger(__name__)
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _optional_int(value: object) -> int | None:
+    # bool is an int subclass; a stray True/False is not a page number.
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 async def search(
     vector: npt.NDArray[np.float32],
     client: AsyncQdrantClient,
     top_k: int = 5,
-    score_threshold: float = 0.4,
+    score_threshold: float = DEFAULT_SCORE_THRESHOLD,
 ) -> tuple[list[Citation], float]:
     results = await client.query_points(
         collection_name=COLLECTION_NAME,
@@ -34,6 +43,10 @@ async def search(
                     year=int(payload.get("year") or 0),
                     doi=payload.get("doi"),
                     excerpt=str(payload.get("text", "")),
+                    paper_id=_optional_str(payload.get("paper_id")),
+                    section=_optional_str(payload.get("section")),
+                    page=_optional_int(payload.get("page")),
+                    chunk_index=_optional_int(payload.get("chunk_index")),
                 )
             )
         except (TypeError, ValueError) as exc:

@@ -4,14 +4,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 from asgi_lifespan import LifespanManager
-from conftest import FakeLlm
+from conftest import TEST_VECTOR_DIM, FakeLlm
 from httpx import ASGITransport, AsyncClient, Response
 
 from app.llm.factory import get_llm_provider
 from app.main import app
 from app.retrieval.client import get_async_client
 from app.retrieval.embedding import get_embedding_provider
-from app.retrieval.ingestion import VECTOR_DIM
 from app.workflow.generate import _ERROR_ANSWER
 
 _QUESTION = "How does AI perform in radiology?"
@@ -58,7 +57,7 @@ async def _post(
     if qdrant_error is not None:
         qdrant.query_points.side_effect = qdrant_error
     embedder = AsyncMock()
-    embedder.embed.return_value = np.zeros(VECTOR_DIM, dtype=np.float32)
+    embedder.embed.return_value = np.zeros(TEST_VECTOR_DIM, dtype=np.float32)
 
     app.dependency_overrides[get_async_client] = lambda: qdrant
     app.dependency_overrides[get_embedding_provider] = lambda: embedder
@@ -192,7 +191,7 @@ async def test_client_disconnect_cancels_graph_and_llm() -> None:
     qdrant = AsyncMock()
     qdrant.query_points.return_value.points = [_point()]
     embedder = AsyncMock()
-    embedder.embed.return_value = np.zeros(VECTOR_DIM, dtype=np.float32)
+    embedder.embed.return_value = np.zeros(TEST_VECTOR_DIM, dtype=np.float32)
     app.dependency_overrides[get_async_client] = lambda: qdrant
     app.dependency_overrides[get_embedding_provider] = lambda: embedder
     app.dependency_overrides[get_llm_provider] = lambda: blocking

@@ -25,9 +25,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Dependency CVE audit
 .\.venv\Scripts\pip-audit.exe
 
-# Ingest papers into Qdrant (requires Qdrant running)
-.\.venv\Scripts\python.exe scripts/ingest.py
-.\.venv\Scripts\python.exe scripts/ingest.py --overwrite   # drop and re-index
+# Full-text corpus, host side (Phase 8): download PDFs -> parse with Docling -> data/parsed/
+.\.venv\Scripts\python.exe -m scripts.download_papers   # data/pdfs/<paper_id>.pdf (gitignored); --force re-downloads
+.\.venv\Scripts\python.exe -m scripts.parse_papers      # needs the `pdf` extra (docling); --only <id>, --force
+
+# Ingest papers into Qdrant (requires Qdrant running; no parsed cache = abstract-only fallback)
+.\.venv\Scripts\python.exe -m scripts.ingest   # run as a module so `app` imports
+.\.venv\Scripts\python.exe -m scripts.ingest --overwrite   # drop and re-index
 
 # Benchmark candidate LLM providers/models for speed (run as a module)
 .\.venv\Scripts\python.exe -m scripts.benchmark_llm --models ollama:qwen3:0.6b,ollama:qwen3:1.7b
@@ -70,7 +74,7 @@ Streamlit UI → FastAPI Backend → LangGraph Workflow
                                            → Citation-grounded response
 ```
 
-### Current implementation (Phase 7 complete)
+### Current implementation (Phase 8 complete)
 
 **API layer**
 - `app/main.py` — FastAPI app factory; manages the active LLM provider's lifespan via `make_llm_provider()`; mounts `health_router`, `model_router`, and `query_router`; registers `UnsafeQueryError` exception handler.
@@ -78,11 +82,11 @@ Streamlit UI → FastAPI Backend → LangGraph Workflow
 - `app/api/routes/model.py` — `GET /model/status`. Reports whether the active LLM provider's model is warm.
 - `app/api/routes/query.py` — `POST /query` (builds and `ainvoke`s the LangGraph workflow, returns `QueryResponse`) and `POST /query/stream` (SSE via `EventSourceResponse`; `astream(["tasks","custom","values"])` run in its own task so a client disconnect cancels the graph and LLM; ADR-0017).
 - `app/core/exceptions.py` — `UnsafeQueryError`.
-- `app/models/query.py` — `QueryRequest`, `Citation`, `QueryResponse`, SSE event payloads (`StepStartEvent`, `StepEndEvent`, `CitationsEvent`, `TokenEvent`, `ErrorEvent`).
+- `app/models/query.py` — `QueryRequest`, `Citation` (one per chunk; optional `paper_id`, `section`, `page`, `chunk_index`), `QueryResponse`, SSE event payloads (`StepStartEvent`, `StepEndEvent`, `CitationsEvent`, `TokenEvent`, `ErrorEvent`).
 
 **LLM layer**
 - `app/llm/base.py` — `LlmProvider` Protocol with `generate()`, `stream()` and `generate_structured()` (ADR-0018); `ModelStatusProvider` Protocol with `model`, `warmup()`, `is_model_warm()`.
-- `app/llm/ollama.py` — `OllamaClient`: async context manager; `generate()` and `stream()` (NDJSON, never yields `thinking`) call `/api/generate` (string prompt) or `/api/chat` (message list); default model `qwen3:0.6b` via `OLLAMA_MODEL` env var, thinking mode off by default via `OLLAMA_THINK`.
+- `app/llm/ollama.py` — `OllamaClient`: async context manager; `generate()` and `stream()` (NDJSON, never yields `thinking`) call `/api/generate` (string prompt) or `/api/chat` (message list); default model `qwen3:0.6b` via `OLLAMA_MODEL` env var, thinking mode off by default via `OLLAMA_THINK`; `OLLAMA_NUM_CTX` (default 8192) is sent as `options.num_ctx` on every call including warmup.
 - `app/llm/gemini.py` — `GeminiClient`: opt-in application provider over the `google-genai` SDK (optional extra); satisfies `LlmProvider` (incl. `stream()`) and `ModelStatusProvider` structurally. `generate`/`stream` on both clients are `@traceable` — LangSmith tracing is opt-in via `LANGSMITH_TRACING=true`, a no-op otherwise (ADR-0019).
 - `app/llm/factory.py` — `make_llm_provider()` dispatches on `LLM_PROVIDER` (`ollama` default, `gemini` opt-in); `get_llm_provider()` is the FastAPI dependency reading `app.state.llm`.
 
@@ -92,16 +96,21 @@ Streamlit UI → FastAPI Backend → LangGraph Workflow
 - `app/workflow/classify.py` — `classify_node`: phrase-pattern safety filter (frozenset of unsafe patterns); sets `is_unsafe` / `route`.
 - `app/workflow/rewrite.py` — `make_rewrite_node(llm)`: Ollama-backed query rewriter; falls back to original question on LLM error.
 - `app/workflow/retrieve.py` — `make_retrieve_node(client, provider)`: embeds rewritten query, runs Qdrant search, populates `citations` and `confidence`.
-- `app/workflow/generate.py` — `make_generate_node(llm)`: synthesises answer from evidence via `llm.stream()` (always streams; tokens go to the LangGraph stream writer, a no-op under `ainvoke`); on LLM failure emits an `error` event and returns an error message.
+- `app/workflow/generate.py` — `make_generate_node(llm, *, evidence_budget_tokens=4000)`: synthesises answer from evidence (`[n] title — section (p. page)` + excerpt; a chars/3 budget guard drops whole lowest-ranked items, never truncates) via `llm.stream()` (always streams; tokens go to the LangGraph stream writer, a no-op under `ainvoke`); on LLM failure emits an `error` event and returns an error message.
 - `app/workflow/validate.py` — `validate_node`: sets `grounded = True` when citations exist and answer is non-empty.
 
 **Retrieval layer**
 - `app/retrieval/client.py` — `get_async_client()`: FastAPI dependency for `AsyncQdrantClient`, reads `QDRANT_URL` from env.
-- `app/retrieval/embedding.py` — `EmbeddingProvider` Protocol; `get_embedding_provider()` FastAPI dependency; `SentenceTransformer` singleton (reads `EMBEDDING_MODEL` env var); `embed_async()` offloads to threadpool.
-- `app/retrieval/ingestion.py` — `ingest(papers_dir, client, model, *, overwrite)`: validates abstracts, processes in batches of 32, upserts to Qdrant collection `papers`.
-- `app/retrieval/search.py` — `search(vector, client, top_k)`: queries Qdrant, parses payloads defensively, returns `(list[Citation], float)`.
-- `scripts/ingest.py` — CLI ingestion script; `--papers-dir` / `PAPERS_DIR` env var; `--overwrite` flag; `sys.exit(1)` on failure.
-- `data/papers/*.json` — 10 curated public medical-AI papers (corpus).
+- `app/retrieval/embedding.py` — `EmbeddingProvider` Protocol; `get_embedding_provider()` FastAPI dependency; `SentenceTransformer` singleton; `get_model_name()` reads `EMBEDDING_MODEL` (default `BAAI/bge-small-en-v1.5`, ADR-0022; vector size comes from the model, no `VECTOR_DIM`); `embed_async()` offloads to threadpool.
+- `app/retrieval/parsed.py` — `load_parsed(parsed_dir, paper_id)`: loads the cached Docling JSON (`DoclingDocument`) from `data/parsed/`; `None` + warning if missing/invalid/path-traversal.
+- `app/retrieval/chunking.py` — `chunk_paper(...)`: Docling `HybridChunker` over the parsed document plus the custom parts of ADR-0021 (heading levels, dropped sections, `Section > Subsection` label, token budget, manifest abstract = chunk 0); returns frozen `Chunk`s. No parsed file → abstract-only.
+- `app/retrieval/ingestion.py` — `ingest(papers_dir, client, model, *, model_name, parsed_dir=None, overwrite=False, tokenizer=None)`: chunks every manifest, embeds in batches, point ID = `uuid5(paper_id:chunk_index)`, deletes a paper's points by `paper_id` filter then upserts into collection `papers`; recreates the collection when vector size or `embedding_model` differs.
+- `app/retrieval/consistency.py` — `embedding_model_mismatch()`: startup check that logs a warning when the collection's `embedding_model` differs from `EMBEDDING_MODEL` (never fails startup).
+- `app/retrieval/search.py` — `search(vector, client, top_k)`: queries Qdrant (`DEFAULT_SCORE_THRESHOLD` = 0.6, provisional until Phase 9), parses payloads defensively (malformed optional fields become `None`), returns `(list[Citation], float)`.
+- `scripts/download_papers.py` — downloads the arXiv PDFs named in the manifests to `data/pdfs/` (gitignored); skips existing files, rate-limited.
+- `scripts/parse_papers.py` — host-only: Docling converts PDFs to `data/parsed/<paper_id>.json` (gitignored; Compose mounts it read-only). `docling` is in the optional `pdf` extra, never in the image; `docling-core[chunking]` is a main dependency.
+- `scripts/ingest.py` — CLI ingestion script; `--papers-dir` / `PAPERS_DIR`, `--parsed-dir` / `PARSED_DIR`; `--overwrite` flag; loads `.env`; `sys.exit(1)` on failure.
+- `data/papers/*.json` — 10 curated public medical-AI papers: manifests with metadata, abstract, versioned `arxiv_id` and `pdf_url` (corpus). Full text comes from the PDFs via the parsed cache.
 
 ### Key architectural decisions
 
@@ -121,7 +130,7 @@ Do not add the next layer until the current one is stable:
 4. ~~Streamlit UI~~ ✓
 5. ~~Docker Compose for full-stack local run~~ ✓
 
-Phases 7–11 (streaming, full-text ingestion, retrieval eval, rerank/hybrid, generation eval) are ordered in [`docs/roadmap.md`](docs/roadmap.md). Phase 7 (streaming) is executed; next is its Verify stage, then Phase 8. Write each phase's ADRs during that phase's planning, not in advance.
+Phases 7–11 (streaming, full-text ingestion, retrieval eval, rerank/hybrid, generation eval) are ordered in [`docs/roadmap.md`](docs/roadmap.md). Phase 7 (streaming) is merged (PR #11). Phase 8 (full-text ingestion) is executed; next is its Verify stage, then Phase 9. Write each phase's ADRs during that phase's planning, not in advance.
 
 ### Working process
 
@@ -161,5 +170,5 @@ All five must pass before a PR is mergeable (enforced in CI via GitHub Actions):
 ## Absolute constraints
 
 - No patient data, personal health information, or clinical decision support — ever.
-- No secrets committed to Git. Use environment variables (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_THINK`, `LLM_PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `QDRANT_URL`, `LOG_LEVEL`, `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`). Commit `.env.example`, never `.env`.
+- No secrets committed to Git. Use environment variables (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_THINK`, `OLLAMA_NUM_CTX`, `EMBEDDING_MODEL`, `PAPERS_DIR`, `PARSED_DIR`, `PDF_DIR`, `LLM_PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `QDRANT_URL`, `LOG_LEVEL`, `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`). Commit `.env.example`, never `.env`.
 - Do not make clinical claims in any generated output.
