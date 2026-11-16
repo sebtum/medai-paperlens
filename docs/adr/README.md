@@ -24,5 +24,7 @@
 | [0020](0020-pdf-parser.md) | Docling as the PDF parser for full-text ingestion | Accepted | |
 | [0021](0021-structure-aware-chunking.md) | Chunking with Docling's HybridChunker, chunk/citation identity | Accepted (revised in Execute) | |
 | [0022](0022-default-embedder-bge-small.md) | Default embedder `bge-small-en-v1.5`, dimension from the model | Accepted | Extends 0012 |
+| [0023](0023-golden-set-methodology.md) | Golden-set methodology for retrieval evaluation | Accepted | |
+| [0024](0024-eval-dataset-versioning-and-runner.md) | Eval dataset versioning and retrieval eval runner | Accepted | Extends 0019 |
 
 See [0000-template.md](0000-template.md) for the ADR format.
