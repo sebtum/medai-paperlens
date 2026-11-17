@@ -111,3 +111,68 @@ Yes. I ran the whole project's checks after all four tasks were in:
 
 - **Wave 2:** T5 builds the part that actually runs a question through the search (including the AI query rewriter) and checks that our labels match the real database. T6 builds the comparison maths and the report files. These two can run at the same time.
 - **Later:** T8 writes the 50 questions, T9 runs everything, T10 decides whether to change any app defaults.
+
+---
+
+# Wave 2, in plain words
+
+Nothing is committed yet. Two helpers were built in parallel. All checks pass on the combined code (366 tests, up from 289).
+
+## What these two tasks are for
+
+Wave 1 built the ruler and the test format. Wave 2 builds two more parts:
+- **T5:** the part that asks the search one question.
+- **T6:** the part that compares two search setups fairly and writes the report.
+
+Still no real run: the 50 questions do not exist yet.
+
+## T5: ask the search one question, and check the answer key
+
+**What it is:** the code that takes one test question and sends it through the same steps as the app. It does the optional AI rewrite, turns the text into numbers, searches, and keeps the top 20 results with their scores.
+
+**Three parts:**
+- **Rewrite memory.** The AI rewrites each question once. The result is saved in a file, so later runs give the same rewrite and need no AI running. If the AI fails, the run stops. (In the app, a failure silently uses the original question. For a test that would hide the problem.)
+- **Safety check before scoring.** It looks through the whole database and stops with one list of problems if:
+  - a section named in our answer key does not exist,
+  - a table question has no table,
+  - the database was built with a different embedding model than the run uses (this catches an old bug from Phase 8).
+- **Copy detector.** It measures the longest run of words a question shares with the text it should find. A "reworded" question that copies too much is too easy.
+
+**Result:** done, 48 tests, all on fakes. Never run against the real database or the real AI.
+
+## T6: compare two setups fairly, write reports
+
+**What it is:** say setup A is today's search and B is a change, for example "add a prefix to the query". B scores 0.02 higher on average. Is that real, or luck from 50 questions?
+
+**How it decides:**
+- It re-draws the 50 questions at random 1,000 times and checks whether B still wins. This is called the bootstrap. The random seed is fixed, so you always get the same answer.
+- B only replaces A if it wins across the 95 % range, **and** no question type got clearly worse. (Example: table questions drop while the average rises.)
+- It counts wins, losses and ties per question type.
+- It builds the score-versus-cut-off curve for the similarity threshold.
+- Reports are Markdown files. Each states the setup and says "golden set LLM-labelled (Claude), not human-verified". Types with few questions get a warning.
+
+**Result:** done, 29 tests, on made-up data.
+
+## Did it all work together?
+
+| Check | Result |
+|---|---|
+| Tests | 366 passed |
+| Style (ruff) | clean |
+| Types (mypy) | clean |
+| Security scan (bandit) | clean |
+| pip-audit | not run (see decision 1) |
+
+## Decisions for you
+
+| # | Question | Recommendation |
+|---|---|---|
+| 1 | The bootstrap uses `numpy`, which is installed only as a side effect of other libraries. Declare it in `pyproject.toml`? | Yes, then run `pip-audit`. Otherwise a future dependency change could remove it silently. |
+| 2 | The report cannot show "how many tokens the evidence costs" for k = 3/5/10, because we store no paper text. Should the runner (T7) record a token count per result? | Yes, add it to T7. |
+| 3 | The compare code does not force the main metric (nDCG@5, threshold 0.6). OK? | Yes. The report states the cut-offs anyway. |
+| 4 | T5 imports a private name (`_PROMPT`) from the app's rewriter to fingerprint the prompt. OK? | Yes. |
+| 5 | Tick T5 and T6 in `2-plan.md`? | Yes, once you agree. |
+
+## What comes next
+
+Wave 3: T7 builds the command-line runner that ties T4, T5 and T6 together. T8 is where Claude writes the 50 questions, and it needs T7 first (to list each paper's sections).

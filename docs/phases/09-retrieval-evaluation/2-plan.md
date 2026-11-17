@@ -132,24 +132,24 @@ T3 touches `tests/test_retrieval.py`; no other G1 task does. T8 is authoring (Cl
   - [x] Tested with a fake `Client`, no network (R6); the `langsmith` 0.12.5 method names are checked against the installed package
 - Note: done; 19 tests, fake client. Deviations (accepted): hash stored on each example (0.12.5 cannot update dataset metadata); create/update split; sync refuses a golden file failing `validate_golden`. Never run against real LangSmith.
 
-### [ ] T5: Retrieval target, rewrite cache, pre-flight
+### [x] T5: Retrieval target, rewrite cache, pre-flight
 - Files: `app/evaluation/target.py`, `tests/test_eval_target.py`
 - Depends on: T1, T2, T3 · Group: G2
 - Acceptance criteria:
-  - [ ] `RetrievalConfig` (embedder, collection, prefix, rewrite, rewrite_model, depth=20); `retrieve_ranked(entry, config, ...)` → query used + top-20 `RankedHit`s at t = 0 via `search_hits`
-  - [ ] Rewrite cache as in U6; a miss with no LLM, or any rewrite fallback, raises
-  - [ ] `preflight(...)` as in U2: returns the corpus index (sections, chunk count, chunk types) or raises one error listing all problems (R5)
-  - [ ] n-gram overlap helper; tests with a fake async Qdrant, a fake embedder and `FakeLlm` (no Ollama/Qdrant)
-- Note:
+  - [x] `RetrievalConfig` (embedder, collection, prefix, rewrite, rewrite_model, depth=20); `retrieve_ranked(entry, config, ...)` → query used + top-20 `RankedHit`s at t = 0 via `search_hits`
+  - [x] Rewrite cache as in U6; a miss with no LLM, or any rewrite fallback, raises
+  - [x] `preflight(...)` as in U2: returns the corpus index (sections, chunk count, chunk types) or raises one error listing all problems (R5)
+  - [x] n-gram overlap helper; tests with a fake async Qdrant, a fake embedder and `FakeLlm` (no Ollama/Qdrant)
+- Note: done; 48 tests, fakes only. `preflight(entries, client, config)` (signature chosen in Execute); extra pre-flight problems: empty collection, points missing paper_id/section/chunk_index/embedding_model; `RewriteCacheMissError` (ruff N818); imports the private `_PROMPT` from `app/workflow/rewrite.py` for the prompt hash (accepted). Never run against real Qdrant or Ollama.
 
-### [ ] T6: Bootstrap, comparison, reports
+### [x] T6: Bootstrap, comparison, reports
 - Files: `app/evaluation/compare.py`, `app/evaluation/report.py`, `tests/test_eval_compare.py`
 - Depends on: T1, T2 · Group: G2
 - Acceptance criteria:
-  - [ ] Stratified paired bootstrap, per-type means, W/L/T, `verdict()` exactly as in Decisions; seeded, so results are deterministic
-  - [ ] Tests: A = B → range [0, 0] and all ties; B better on every question → lo > 0 and adopted; one type clearly worse → rejected despite lo > 0
-  - [ ] Markdown renderers: run summary (incl. k = 3/5/10 table, crowding, table hit rate, n-gram overlap per type), comparison, threshold curve; each states the config (R4) and the R9 sentence
-- Note:
+  - [x] Stratified paired bootstrap, per-type means, W/L/T, `verdict()` exactly as in Decisions; seeded, so results are deterministic
+  - [x] Tests: A = B → range [0, 0] and all ties; B better on every question → lo > 0 and adopted; one type clearly worse → rejected despite lo > 0
+  - [x] Markdown renderers: run summary (incl. k = 3/5/10 table, crowding, table hit rate, n-gram overlap per type), comparison, threshold curve; each states the config (R4) and the R9 sentence
+- Note: done; 29 tests, in-code fixtures. Run-result model (`RunMeta`, `QuestionRun`, `RunRecord`, `save_run`/`load_run`) lives in `compare.py`. Added `threshold_verdict` and separate cut-offs for A and B; `verdict()` does not enforce nDCG@5 at 0.6 (reports state the cut-offs; accepted). `numpy` now declared in `pyproject.toml`. Evidence tokens need `QuestionRun.chunk_tokens`, filled by T7.
 
 ### [ ] T7: Runner CLI (local + LangSmith)
 - Files: `scripts/eval_retrieval.py`, `app/evaluation/langsmith_eval.py`, `tests/test_eval_runner.py`
@@ -157,6 +157,7 @@ T3 touches `tests/test_retrieval.py`; no other G1 task does. T8 is authoring (Cl
 - Acceptance criteria:
   - [ ] Subcommands: `run` (pre-flight → retrieve → `runs/<name>.json` + report), `compare A B`, `curve RUN`, `sections` (per-paper section list with chunk ids, for authoring), `pool RUN...` (unlabelled sections in each run's top-10, for adjudication)
   - [ ] `run --langsmith`: `aevaluate` with evaluator adapters over the T1 functions; a test with a mocked `aevaluate` shows the adapters give the same numbers as the local path and the metadata holds the config (R3)
+  - [ ] `run` fills `QuestionRun.chunk_tokens` (token estimate per hit, from the chunk text already read for the n-gram probe, no text stored) so the k = 3/5/10 report shows evidence tokens instead of `n/a`; also fills `ngram_overlap` and `query`
   - [ ] Loads `.env` like `scripts/ingest.py`; runs as `python -m scripts.eval_retrieval`
 - Note:
 
