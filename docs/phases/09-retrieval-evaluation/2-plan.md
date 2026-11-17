@@ -79,10 +79,12 @@
   Every report header states "golden set LLM-labelled (Claude), not human-verified" (R9).
 - **LangSmith (ADR-0024).** Dataset `paperlens-retrieval-golden`; example id =
   `uuid5(ns, entry id)`; inputs `{id, question}`, reference outputs `{type, relevant}`.
-  - The sync script hashes the file. If the hash equals the dataset metadata's
-    `golden_sha256`, it does nothing. Otherwise it upserts the examples, deletes the ones no
-    longer in the file, stores the hash, and tags the version with the short git hash
-    (`update_dataset_tag`).
+  - The sync script hashes the file. If the dataset's example ids equal the file's and every
+    example's metadata `golden_sha256` equals the hash, it does nothing (changed in Execute:
+    `langsmith` 0.12.5 cannot update dataset metadata, so the hash lives on each example).
+    Otherwise it creates/updates the examples, deletes the ones no longer in the file, and
+    tags the version with the short git hash (`update_dataset_tag`). It also refuses a
+    `golden.jsonl` that fails `validate_golden`.
   - It refuses to run if `golden.jsonl` has uncommitted changes.
   - The runner's `--langsmith` uses `aevaluate` with the same retrieval target and thin
     evaluator adapters over the same metric functions; the experiment metadata = run config.
@@ -95,40 +97,40 @@ T3 touches `tests/test_retrieval.py`; no other G1 task does. T8 is authoring (Cl
 
 ## Tasks
 
-### [ ] T1: Metric functions
+### [x] T1: Metric functions
 - Files: `app/evaluation/__init__.py`, `app/evaluation/metrics.py`, `tests/test_eval_metrics.py`
 - Depends on: — · Group: G1
 - Acceptance criteria:
-  - [ ] `RankedHit` (frozen: paper_id, section, chunk_index, chunk_type, score); `cut(hits, k, threshold)`, `collapse_sections`, `recall_at_k`, `mrr_at_k`, `ndcg_at_k`, `is_empty`, `distinct_papers`, `table_hit`, as defined in Decisions
-  - [ ] Hand-computed fixtures: duplicate sections count once, a grade-1-only hit, IDCG cut at k, a relevant hit below the threshold, empty labels raise (off-corpus is excluded upstream) (R2)
-- Note:
+  - [x] `RankedHit` (frozen: paper_id, section, chunk_index, chunk_type, score); `cut(hits, k, threshold)`, `collapse_sections`, `recall_at_k`, `mrr_at_k`, `ndcg_at_k`, `is_empty`, `distinct_papers`, `table_hit`, as defined in Decisions
+  - [x] Hand-computed fixtures: duplicate sections count once, a grade-1-only hit, IDCG cut at k, a relevant hit below the threshold, empty labels raise (off-corpus is excluded upstream) (R2)
+- Note: done; 35 tests. Added: empty labels also raise in `table_hit`; grade outside {1, 2} raises.
 
-### [ ] T2: Golden-set schema and loader
+### [x] T2: Golden-set schema and loader
 - Files: `app/evaluation/golden.py`, `tests/test_eval_golden.py`
 - Depends on: — · Group: G1
 - Acceptance criteria:
-  - [ ] Pydantic `Label`, `GoldenEntry`, `QuestionType` (StrEnum); `QUOTAS`; `load_golden(path)` (JSONL, line numbers in errors); `golden_sha256(path)`
-  - [ ] `validate_golden(entries, manifests)` checks the rules in Decisions (unique ids, grades ∈ {1,2}, quotas, coverage, per-type constraints, paraphrased alias check, banned labels) and returns all violations
-  - [ ] Tested on small in-code fixtures, one per violation
-- Note:
+  - [x] Pydantic `Label`, `GoldenEntry`, `QuestionType` (StrEnum); `QUOTAS`; `load_golden(path)` (JSONL, line numbers in errors); `golden_sha256(path)`
+  - [x] `validate_golden(entries, manifests)` checks the rules in Decisions (unique ids, grades ∈ {1,2}, quotas, coverage, per-type constraints, paraphrased alias check, banned labels) and returns all violations
+  - [x] Tested on small in-code fixtures, one per violation
+- Note: done; 46 tests. `Label.grade` is a plain int so `validate_golden` reports bad grades with the rest; added `load_manifests`, `derive_aliases`; `maira_2` appendix banned-label rule is a heuristic, T8 must check it against real section names.
 
-### [ ] T3: `collection_name` and scored hits in retrieval
+### [x] T3: `collection_name` and scored hits in retrieval
 - Files: `app/retrieval/search.py`, `app/retrieval/ingestion.py`, `scripts/ingest.py`, `tests/test_retrieval.py`
 - Depends on: — · Group: G1
 - Acceptance criteria:
-  - [ ] `search_hits(vector, client, *, top_k, score_threshold, collection_name=COLLECTION_NAME) -> list[RankedHit]` (score + chunk_type kept); `search()` is built on it and returns exactly what it did before
-  - [ ] `ingest(..., collection_name=COLLECTION_NAME)` threads the name through prepare/stale/delete/upsert; `scripts/ingest.py --collection`
-  - [ ] Existing tests unchanged and green; new tests: a non-default collection leaves `papers` untouched (FakeQdrant); `search_hits` returns scores and chunk_type; `/query` contract unchanged (R7)
-- Note:
+  - [x] `search_hits(vector, client, *, top_k, score_threshold, collection_name=COLLECTION_NAME) -> list[RankedHit]` (score + chunk_type kept); `search()` is built on it and returns exactly what it did before
+  - [x] `ingest(..., collection_name=COLLECTION_NAME)` threads the name through prepare/stale/delete/upsert; `scripts/ingest.py --collection`
+  - [x] Existing tests unchanged and green; new tests: a non-default collection leaves `papers` untouched (FakeQdrant); `search_hits` returns scores and chunk_type; `/query` contract unchanged (R7)
+- Note: done; 46 tests in file. Deviation (accepted): `search()` is not built on `search_hits()` (RankedHit lacks title/authors/page); both share `_query_points`, parsing is duplicated. `search_hits` skips points without paper_id/section/chunk_index, missing chunk_type -> "text". `--collection` not run against real Qdrant.
 
-### [ ] T4: LangSmith dataset sync
+### [x] T4: LangSmith dataset sync
 - Files: `app/evaluation/langsmith_sync.py`, `scripts/sync_golden.py`, `tests/test_eval_sync.py`
 - Depends on: T2 · Group: G1 (after T2's models exist; small)
 - Acceptance criteria:
-  - [ ] No-op when the hash matches; on a change: create the dataset if missing, upsert by stable ids, delete removed examples, store the hash, tag with the git hash
-  - [ ] Refuses a dirty `golden.jsonl`; a missing `LANGSMITH_API_KEY` gives a clear exit 1
-  - [ ] Tested with a fake `Client`, no network (R6); the `langsmith` 0.12.5 method names are checked against the installed package
-- Note:
+  - [x] No-op when the hash matches; on a change: create the dataset if missing, upsert by stable ids, delete removed examples, store the hash, tag with the git hash
+  - [x] Refuses a dirty `golden.jsonl`; a missing `LANGSMITH_API_KEY` gives a clear exit 1
+  - [x] Tested with a fake `Client`, no network (R6); the `langsmith` 0.12.5 method names are checked against the installed package
+- Note: done; 19 tests, fake client. Deviations (accepted): hash stored on each example (0.12.5 cannot update dataset metadata); create/update split; sync refuses a golden file failing `validate_golden`. Never run against real LangSmith.
 
 ### [ ] T5: Retrieval target, rewrite cache, pre-flight
 - Files: `app/evaluation/target.py`, `tests/test_eval_target.py`

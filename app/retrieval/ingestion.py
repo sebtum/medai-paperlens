@@ -62,7 +62,7 @@ def _load_manifests(papers_dir: Path) -> list[tuple[str, dict[str, Any]]]:
 
 
 def _collection_is_stale(
-    client: QdrantClient, vector_dim: int, model_name: str
+    client: QdrantClient, vector_dim: int, model_name: str, collection_name: str
 ) -> str | None:
     """Why the existing collection can't be reused with this model, or `None`.
 
@@ -70,14 +70,14 @@ def _collection_is_stale(
     that field comes from before Phase 8 (MiniLM, integer IDs), even if its size
     happens to match.
     """
-    vectors = client.get_collection(COLLECTION_NAME).config.params.vectors
+    vectors = client.get_collection(collection_name).config.params.vectors
     if not isinstance(vectors, VectorParams):
         return "it uses named vectors"
     if vectors.size != vector_dim:
         return f"vector size {vectors.size} differs from the model's {vector_dim}"
 
     sample, _ = client.scroll(
-        COLLECTION_NAME, limit=1, with_payload=["embedding_model"], with_vectors=False
+        collection_name, limit=1, with_payload=["embedding_model"], with_vectors=False
     )
     if sample:
         stored = (sample[0].payload or {}).get("embedding_model")
@@ -87,29 +87,37 @@ def _collection_is_stale(
 
 
 def _prepare_collection(
-    client: QdrantClient, vector_dim: int, model_name: str, overwrite: bool
+    client: QdrantClient,
+    vector_dim: int,
+    model_name: str,
+    overwrite: bool,
+    collection_name: str,
 ) -> None:
     existing = {c.name for c in client.get_collections().collections}
-    if COLLECTION_NAME in existing:
+    if collection_name in existing:
         reason = "--overwrite requested" if overwrite else None
         if reason is None:
-            reason = _collection_is_stale(client, vector_dim, model_name)
+            reason = _collection_is_stale(
+                client, vector_dim, model_name, collection_name
+            )
             if reason is not None:
-                logger.warning("Recreating collection %r: %s", COLLECTION_NAME, reason)
+                logger.warning("Recreating collection %r: %s", collection_name, reason)
         if reason is not None:
-            client.delete_collection(COLLECTION_NAME)
-            existing.discard(COLLECTION_NAME)
+            client.delete_collection(collection_name)
+            existing.discard(collection_name)
 
-    if COLLECTION_NAME not in existing:
+    if collection_name not in existing:
         client.create_collection(
-            collection_name=COLLECTION_NAME,
+            collection_name=collection_name,
             vectors_config=VectorParams(size=vector_dim, distance=Distance.COSINE),
         )
 
 
-def _delete_paper_points(client: QdrantClient, paper_id: str) -> None:
+def _delete_paper_points(
+    client: QdrantClient, paper_id: str, collection_name: str
+) -> None:
     client.delete(
-        collection_name=COLLECTION_NAME,
+        collection_name=collection_name,
         points_selector=FilterSelector(
             filter=Filter(
                 must=[FieldCondition(key="paper_id", match=MatchValue(value=paper_id))]
@@ -127,6 +135,7 @@ def ingest(
     parsed_dir: Path | None = None,
     overwrite: bool = False,
     tokenizer: BaseTokenizer | None = None,
+    collection_name: str = COLLECTION_NAME,
 ) -> int:
     """Chunk, embed and upsert every paper; return the number of chunks indexed.
 
@@ -134,6 +143,8 @@ def ingest(
     (or another vector size) is recreated. `parsed_dir=None` means no parsed cache, so
     every paper is indexed from its abstract. `tokenizer` defaults to the embedder's own
     (`make_embedder_tokenizer`); it is a parameter so tests need no model download.
+    `collection_name` selects the target collection (default `papers`); other
+    collections, such as the per-embedder eval ones, are never touched.
     """
     papers = _load_manifests(papers_dir)
 
@@ -141,7 +152,7 @@ def ingest(
     if vector_dim is None:
         raise ValueError("embedding model does not report its vector dimension")
 
-    _prepare_collection(client, vector_dim, model_name, overwrite)
+    _prepare_collection(client, vector_dim, model_name, overwrite, collection_name)
 
     if not papers:
         return 0
@@ -161,7 +172,7 @@ def ingest(
         chunks = chunk_paper(paper, doc, tokenizer, paper_id=paper_id)
 
         # Delete first so a paper that now has fewer chunks leaves nothing stale.
-        _delete_paper_points(client, paper_id)
+        _delete_paper_points(client, paper_id, collection_name)
         for start in range(0, len(chunks), BATCH_SIZE):
             batch = chunks[start : start + BATCH_SIZE]
             embeddings = model.encode(
@@ -187,7 +198,7 @@ def ingest(
                 )
                 for chunk, embedding in zip(batch, embeddings, strict=True)
             ]
-            client.upsert(collection_name=COLLECTION_NAME, points=points)
+            client.upsert(collection_name=collection_name, points=points)
             total += len(points)
 
     if parsed_count == 0:

@@ -18,11 +18,15 @@ overwrite the dev collection.
 dataset is never edited in its UI.
 
 **Sync** (`scripts/sync_golden.py`) to the dataset `paperlens-retrieval-golden`:
-- It hashes the file (sha256). If the hash equals the dataset's stored `golden_sha256`, it
-  does nothing.
-- Otherwise it upserts the examples (example id = `uuid5` of the entry id, so ids are
-  stable), deletes those no longer in the file, stores the new hash, and tags the dataset
-  version with the short git hash.
+- It hashes the file (sha256). If the dataset exists, its example ids equal the file's and
+  every example's metadata `golden_sha256` equals the hash, it does nothing. (Changed in
+  Execute: `langsmith` 0.12.5 cannot update dataset metadata after creation, so the hash is
+  stored on each example, not on the dataset.)
+- Otherwise it creates new examples and updates existing ones (example id = `uuid5` of the
+  entry id, so ids are stable), deletes those no longer in the file, and tags the dataset
+  version with the short git hash. Writing the hash on every example also lets an
+  interrupted sync repair itself on the next run.
+- It validates the file with `validate_golden` first and refuses an invalid set.
 - It refuses to run while `golden.jsonl` has uncommitted changes, so every tag matches a
   commit.
 

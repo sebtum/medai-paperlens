@@ -8,7 +8,7 @@ import dotenv
 
 from app.retrieval.client import get_client
 from app.retrieval.embedding import get_model, get_model_name
-from app.retrieval.ingestion import ingest
+from app.retrieval.ingestion import COLLECTION_NAME, ingest
 
 # Read `.env` like the API does, so both use the same EMBEDDING_MODEL and QDRANT_URL.
 dotenv.load_dotenv()
@@ -37,6 +37,14 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--collection",
+        default=COLLECTION_NAME,
+        help=(
+            "Qdrant collection to ingest into (default: %(default)s, the app "
+            "collection). Use e.g. eval_<model-slug> for evaluation embedders."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Drop and recreate the collection before ingesting.",
@@ -50,9 +58,10 @@ if __name__ == "__main__":
 
     if args.overwrite:
         logger.warning(
-            "--overwrite will DELETE the existing Qdrant collection "
+            "--overwrite will DELETE the existing Qdrant collection %r "
             "and re-index from scratch. "
-            "Do not use in production unless you intend a full re-index."
+            "Do not use in production unless you intend a full re-index.",
+            args.collection,
         )
 
     try:
@@ -63,6 +72,7 @@ if __name__ == "__main__":
             model_name=get_model_name(),
             parsed_dir=Path(args.parsed_dir),
             overwrite=args.overwrite,
+            collection_name=args.collection,
         )
         logger.info("Ingested %d chunks.", count)
     except Exception as exc:
