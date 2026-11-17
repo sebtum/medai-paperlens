@@ -60,6 +60,48 @@ original question is a run failure: it would silently turn "rewrite on" into "re
 ingested into `eval_<model-slug>` through a new `collection_name` keyword on `ingest()` and
 `search()`/`search_hits()` and `scripts/ingest.py --collection`; the defaults are unchanged.
 
+## Changes during Execute
+
+The decision above stands. The following differs from the Plan or was added while
+building and running it (Phase 9 Execute, 2026-11-17).
+
+- **Where the code lives.** The runner logic is in `app/evaluation/` (`runner.py`,
+  `target.py`, `compare.py`, `report.py`, `authoring.py`, `langsmith_sync.py`,
+  `langsmith_eval.py`), and `scripts/eval_retrieval.py` and `scripts/sync_golden.py` are
+  thin CLIs, so mypy and bandit cover the logic. `numpy` is now a declared dependency (the
+  bootstrap uses it).
+- **Sync.** The hash is on each example, as described above. The sync also refuses a
+  `golden.jsonl` that fails `validate_golden` (no opt-out flag) and one with uncommitted
+  changes. The tag is the short git hash of HEAD. Run on 2026-11-17 it created 50
+  examples on the EU LangSmith host (tag `11318b7`), and a second sync was a no-op.
+- **Run files.** Besides the plan's fields, a run stores `query` (the text used),
+  `ngram_overlap` and `chunk_tokens` (a token estimate per hit, so the k = 3 / 5 / 10
+  report can show evidence tokens; no paper text is stored). A run is joined to the
+  golden set strictly: a missing or extra id raises.
+- **Rewrite cache.** Keyed as planned. Rewrites ran through the app's own
+  `make_rewrite_node` at `temperature=0, seed=0` with `qwen3:0.6b`: 50 rewrites, 0
+  fallbacks. `--no-llm` makes the runner read only the cache and fail on a missing
+  rewrite. A rewrite equal to the question counts as a legitimate output (13 of 50).
+- **Truncation exactness.** The check against a direct Qdrant top-5 query found 0
+  mismatches for all four configs on all 50 questions, and stored hits equal a fresh
+  search.
+- **Query prefix.** The eval embedder is built with an empty provider prefix, and the
+  `prefix` config adds the BGE instruction itself, so each config sets its prefix exactly
+  once, even though the app default changed (ADR-0025).
+- **Files and line endings.** `data/eval/CHANGELOG.md` holds the pooling log.
+  `.gitattributes` pins LF line endings for `data/eval/*.jsonl` and `data/eval/**/*.json`
+  so the golden sha256 is the same on every checkout.
+- **LangSmith experiment.** `run --langsmith` ran for real once (twice by accident, so
+  one duplicate experiment exists). Every per-question score equalled the local run; the
+  runner enforces this and exits with an error otherwise. Only questions, labels,
+  ranked hits and scores are sent, never paper text.
+- **Runs.** `bge-base-en-v1.5` was ingested into `eval_bge-base-en-v1.5` (595 chunks,
+  768 dimensions) while `papers` stayed untouched. Runs and reports are committed in
+  `data/eval/runs/` and `data/eval/reports/` (v0 files carry a `_v0` suffix).
+- **Not run for real:** the sync's update and delete path against LangSmith (only
+  tested with a fake client), and `scripts/ingest.py --collection` outside the bge-base
+  ingest.
+
 ## Alternatives Considered
 
 ### LangSmith dataset as the source of truth

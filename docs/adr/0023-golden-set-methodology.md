@@ -75,6 +75,39 @@ more losses than wins in that type). Any change is recorded in an ADR.
 All reports state that the golden set is **LLM-labelled (Claude), not human-verified**, and
 that results hold for questions like these.
 
+## Changes during Execute
+
+The decision above stands. These details were settled while building and running it
+(Phase 9 Execute, 2026-11-17).
+
+- **Golden set as built.** v0 has 50 entries and 142 labels (83 at grade 2, 59 at
+  grade 1), with the planned quotas. The verify pass gave 10 entries extra labels and
+  rewrote or dropped none. The worst paraphrased overlap with a source chunk was 3 words
+  (limit 4), so no entry was rewritten.
+- **Pooling ran over all 383 candidates.** The union of the top 10 of all four v0 runs
+  (`baseline`, `no_rewrite`, `prefix`, `bge_base`) at threshold 0.40 gave 383
+  unlabelled sections. All were read: 8 labels were added (1 at grade 2, 7 at grade 1),
+  375 were rejected. No question text, id, type or `source_chunks` entry changed, and no
+  label was removed or re-graded. The off-corpus questions were checked separately and
+  nothing answers them.
+- **v0 to v1.** The result is v1: 150 labels (84 at grade 2, 66 at grade 1), sha256
+  prefix `4a4733e5fa76`. Baseline Recall@5 went from 0.510 to 0.509 and nDCG@5 from 0.521
+  to 0.525, matching the estimate made by rescoring the old hits. So the draft missed few
+  labels, at least among sections that these four setups retrieve; sections that none of
+  them retrieves cannot be found by pooling. The method and every addition are in
+  `data/eval/CHANGELOG.md`.
+- **Banned-label rule.** The `maira_2` rule in `validate_golden` matches no real section
+  name, so it bans nothing. The labels avoid the odd Phase 8 sections because the author
+  checked them, not because the validator enforces it. In the pool those sections were
+  1.6 % of the top-5 slots (14 of 900) and none answers a question. The rule was left as
+  is.
+- **Report wording.** Every report states "golden set LLM-labelled (Claude), not
+  human-verified". The optional owner spot-check list (10 entries) is in
+  `docs/phases/09-retrieval-evaluation/3-execute-T8.md`.
+- **Outcome.** The decision rule was applied in Phase 9 and its results are recorded in
+  ADR-0025 (the BGE query prefix was adopted; threshold, `top_k`, rewrite and embedder
+  were kept).
+
 ## Alternatives Considered
 
 ### Gemini-drafted, human-filtered (roadmap plan)

@@ -192,3 +192,20 @@ See `3-execute-T9c.md` section 9.
 ## Next
 
 T10: ADR-0025 and the allowed code changes (threshold constant, prefix setting). Stops for the owner if rewrite-off or bge-base wins.
+
+
+---
+
+# Waves 5 and 6 (G5: T10, G6: T11), 2026-11-17
+
+T10 and T11 each ran as one subagent. Reports: `3-execute-T10.md`, `3-execute-T11.md`.
+
+| Check (orchestrating session) | Result |
+|---|---|
+| `pytest tests/` | 442 passed |
+| `ruff check .`, `mypy app/`, `bandit -r app/` | clean |
+| Live (T10 agent, re-checked by reading the diff) | 45/45 on-corpus questions give the same top 5 with the app's new default as the stored `prefix` run |
+
+Outcomes: prefix adopted as the app default (queries only, no re-ingest); rewrite, bge-small, threshold 0.6 (inert) and top_k 5 kept; no stop condition. ADR-0025 written. Docs updated.
+
+Phase 9 Execute is complete. Next: Stage 4 Verify in a fresh session (`4-verify.md`). Follow-ups recorded in ADR-0025, not done: the rewriter's "Rewritten question:" leak, a better refusal signal than the score cut-off, rebuild of the Docker api image to pick up the prefix.

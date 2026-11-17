@@ -6,6 +6,7 @@ Fakes only: an in-memory async Qdrant, a fake embedder, a fake rewrite LLM and a
 so tests that call it are plain (sync) tests.
 """
 
+import dataclasses
 import datetime
 import json
 import logging
@@ -259,6 +260,80 @@ def harness(tmp_path: Path) -> Harness:
 # ---------------------------------------------------------------------------
 # Named configs
 # ---------------------------------------------------------------------------
+
+
+class TestNoQueryPrefixLeak:
+    """ADR-0025: the app embedder prefixes queries by default; the eval must not.
+
+    Every named config sets its prefix exactly once, through `RetrievalConfig.prefix`.
+    """
+
+    def _embedded_text(self, monkeypatch: pytest.MonkeyPatch, config_name: str) -> str:
+        import sentence_transformers
+
+        seen: list[str] = []
+
+        class FakeModel:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def encode(self, text: str) -> Any:
+                import numpy as np
+
+                seen.append(text)
+                return np.zeros(3, dtype=np.float32)
+
+        monkeypatch.setattr(sentence_transformers, "SentenceTransformer", FakeModel)
+        monkeypatch.delenv("EMBEDDING_QUERY_PREFIX", raising=False)
+
+        options = runner.make_run_options(config_name)
+        config = dataclasses.replace(options.config, rewrite=False, rewrite_model="")
+        embedder = runner._default_embedder(config.embedder)
+
+        import asyncio
+
+        from app.evaluation.target import retrieve_ranked
+
+        entry = make_entry()
+        asyncio.run(
+            retrieve_ranked(
+                entry,
+                config,
+                embedder=embedder,
+                client=FakeAsyncQdrant([make_point("p1", "Intro", 0)]),  # type: ignore[arg-type]
+            )
+        )
+        assert len(seen) == 1
+        return seen[0].removesuffix(entry.question)
+
+    @pytest.mark.parametrize("config_name", ["baseline", "no_rewrite", "bge_base"])
+    def test_configs_without_prefix_embed_the_bare_query(
+        self, monkeypatch: pytest.MonkeyPatch, config_name: str
+    ) -> None:
+        assert self._embedded_text(monkeypatch, config_name) == ""
+
+    def test_prefix_config_gets_the_prefix_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert self._embedded_text(monkeypatch, "prefix") == runner.BGE_QUERY_PREFIX
+
+    def test_an_env_prefix_does_not_reach_the_eval_embedder(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # same as above, but with the variable set after the helper's delenv
+        monkeypatch.setenv("EMBEDDING_QUERY_PREFIX", "env: ")
+        import sentence_transformers
+
+        monkeypatch.setattr(
+            sentence_transformers, "SentenceTransformer", lambda name: object()
+        )
+        embedder = runner._default_embedder("BAAI/bge-small-en-v1.5")
+        assert embedder._query_prefix == ""  # type: ignore[attr-defined]
+
+    def test_frozen_eval_prefix_equals_the_app_bge_default(self) -> None:
+        from app.retrieval.embedding import BGE_QUERY_PREFIX
+
+        assert runner.BGE_QUERY_PREFIX == BGE_QUERY_PREFIX
 
 
 class TestNamedConfigs:

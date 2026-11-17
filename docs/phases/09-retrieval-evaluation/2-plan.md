@@ -181,23 +181,23 @@ T3 touches `tests/test_retrieval.py`; no other G1 task does. T8 is authoring (Cl
   - [x] Optional owner spot-check file of 10 entries offered
 - Note: done in three agent parts (T9a v0 runs, T9b pooling, T9c v1 runs + LangSmith); reports 3-execute-T9a/T9b/T9c.md. Pooling read all 383 candidates: 8 labels added (142 -> 150), baseline nDCG@5 0.521 -> 0.525, estimate matched. Truncation check: 0 mismatches. Dataset synced (50 examples, tag 11318b7), second sync a no-op; first `aevaluate` experiment passed the equality check (one duplicate experiment exists). Findings for T10: 0.6 threshold inert (off-corpus no-result 0.00 in all runs); 6/50 rewrites start with 'Rewritten question:' and 13/50 are unchanged (app rewrite_node does not strip the prefix). The owner spot-check list is in 3-execute-T8.md.
 
-### [ ] T10: Comparisons and results ADR
+### [x] T10: Comparisons and results ADR
 - Files: `data/eval/reports/*.md`, `docs/adr/0025-retrieval-defaults-after-eval.md`, possibly `app/models/query.py`, `ui/app.py`, `app/retrieval/embedding.py`, `.env.example`
 - Depends on: T9 · Group: G5
 - Acceptance criteria:
-  - [ ] Comparisons vs baseline: rewrite, prefix, embedder (rule on nDCG@5); threshold curve (threshold rule); k = 3/5/10 table (measure only); U3 paraphrased vs factual
-  - [ ] ADR-0025 records every outcome, including "kept", with the numbers and the R9 caveat
-  - [ ] Allowed code changes: the threshold constant + UI slider, or the prefix setting (`query_prefix`, `EMBEDDING_QUERY_PREFIX`, default as decided). **If rewrite-off or bge-base wins → stop and re-plan with the owner** (graph/SSE or Compose/latency impact)
-- Note:
+  - [x] Comparisons vs baseline: rewrite, prefix, embedder (rule on nDCG@5); threshold curve (threshold rule); k = 3/5/10 table (measure only); U3 paraphrased vs factual
+  - [x] ADR-0025 records every outcome, including "kept", with the numbers and the R9 caveat
+  - [x] Allowed code changes: the threshold constant + UI slider, or the prefix setting (`query_prefix`, `EMBEDDING_QUERY_PREFIX`, default as decided). **If rewrite-off or bge-base wins → stop and re-plan with the owner** (graph/SSE or Compose/latency impact)
+- Note: done; reports 3-execute-T10.md. Outcomes: prefix adopted as app default (`EMBEDDING_QUERY_PREFIX`, queries only, no re-ingest; +0.041 nDCG@5, range [+0.012, +0.074]); rewrite, bge-small, threshold 0.6 (inert) and top_k 5 kept; no stop condition. Live check: 45/45 questions give the same top 5 as the `prefix` run. ADR-0025 written.
 
-### [ ] T11: Docs
+### [x] T11: Docs
 - Files: `README.md`, `CLAUDE.md`, `docs/roadmap.md`, `docs/architecture.md`, ADR-0023/0024
 - Depends on: all · Group: G6
 - Acceptance criteria:
-  - [ ] README: how to run the eval, the sync, and that the golden set is LLM-labelled (R9)
-  - [ ] CLAUDE.md: `app/evaluation/`, the scripts, `--collection`, phase status; roadmap row 9 ✓ with ADRs and "Claude-authored" wording
-  - [ ] ADR-0023/0024 updated with anything Execute changed
-- Note:
+  - [x] README: how to run the eval, the sync, and that the golden set is LLM-labelled (R9)
+  - [x] CLAUDE.md: `app/evaluation/`, the scripts, `--collection`, phase status; roadmap row 9 ✓ with ADRs and "Claude-authored" wording
+  - [x] ADR-0023/0024 updated with anything Execute changed
+- Note: done; 3-execute-T11.md. README, CLAUDE.md, roadmap, architecture, ADR-0022/0023/0024 updated.
 
 ## ADRs
 - ADR-0023: golden-set methodology: types, quotas, authoring passes, labels, metrics, decision rule incl. the top_k/threshold handling; roadmap row 9 wording (written in Plan)

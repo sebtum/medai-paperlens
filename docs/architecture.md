@@ -128,12 +128,34 @@ chunks them with Docling's HybridChunker and indexes one Qdrant point per chunk
 
 ```text
 question
- → embed via SentenceTransformer (BAAI/bge-small-en-v1.5 default)
+ → embed via SentenceTransformer (BAAI/bge-small-en-v1.5 default),
+   with a query prefix in front of the question (BGE models; documents are not prefixed)
  → Qdrant top-k cosine search
  → list[Citation] + confidence score
 ```
 
 Each retrieved chunk becomes one citation with paper metadata (title, authors, year, DOI), section path, page, chunk index and the chunk text as excerpt.
+
+The query prefix is set by `EMBEDDING_QUERY_PREFIX`. Unset, `BAAI/bge-*` models get the BGE query instruction and other models get none. It applies to queries only, so changing it needs no re-ingest (ADR-0025).
+
+### Evaluation Layer
+
+Retrieval is measured, not assumed (ADR-0023, ADR-0024, ADR-0025). The eval covers retrieval only, with no generation.
+
+```text
+data/eval/golden.jsonl  (50 questions, labels = paper + section + grade)
+ → runner: optional cached rewrite → embed → Qdrant top 20 at threshold 0
+ → data/eval/runs/<name>.json   (ranked hits and scores, no paper text)
+ → metrics (Recall@k, MRR, nDCG@k), paired bootstrap, threshold curve
+ → data/eval/reports/*.md
+```
+
+- **Code:** core logic in `app/evaluation/` (`metrics`, `golden`, `target`, `compare`, `report`, `runner`, `authoring`, `langsmith_sync`, `langsmith_eval`), so mypy and bandit cover it. `scripts/eval_retrieval.py` and `scripts/sync_golden.py` are thin CLIs.
+- **One collection per embedder.** `papers` is the app collection. Other embedders are ingested into `eval_<model-slug>` (`scripts/ingest.py --collection`), so a sweep never overwrites the app index. A pre-flight check fails the run if a label points at a missing section or the collection's `embedding_model` differs from the run's.
+- **Git is the source of truth for the golden set.** LangSmith holds a synced copy (dataset `paperlens-retrieval-golden`) and optional experiments. It is opt-in: the local run, the tests and CI never need an account.
+- **Rewrites are cached** in `data/eval/rewrites.jsonl`, so every sweep reuses the same rewrites and reproduces without Ollama.
+- **Query prefix in the eval.** A config sets its own prefix. The eval embedder is built with an empty provider prefix, so the app default cannot add a second one.
+- **Limits:** the golden set is LLM-labelled (Claude), not human-verified, and has only 5 off-corpus questions. Reports say so.
 
 ### LLM Provider
 
@@ -250,6 +272,8 @@ LLM_PROVIDER=ollama
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
 QDRANT_URL=http://localhost:6333
+EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+# EMBEDDING_QUERY_PREFIX=   (optional; unset = BGE instruction for BAAI/bge-* models)
 LOG_LEVEL=INFO
 ```
 

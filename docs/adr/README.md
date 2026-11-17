@@ -26,5 +26,6 @@
 | [0022](0022-default-embedder-bge-small.md) | Default embedder `bge-small-en-v1.5`, dimension from the model | Accepted | Extends 0012 |
 | [0023](0023-golden-set-methodology.md) | Golden-set methodology for retrieval evaluation | Accepted | |
 | [0024](0024-eval-dataset-versioning-and-runner.md) | Eval dataset versioning and retrieval eval runner | Accepted | Extends 0019 |
+| [0025](0025-retrieval-defaults-after-eval.md) | Retrieval defaults after the Phase 9 evaluation (threshold, top_k, rewrite, embedder, query prefix) | Accepted | Amends 0022, 0012 |
 
 See [0000-template.md](0000-template.md) for the ADR format.

@@ -27,7 +27,14 @@ from app.llm.factory import get_llm_provider
 from app.main import app
 from app.models.query import DEFAULT_SCORE_THRESHOLD, QueryRequest
 from app.retrieval.client import get_async_client
-from app.retrieval.embedding import embed, get_embedding_provider, get_model_name
+from app.retrieval.embedding import (
+    BGE_QUERY_PREFIX,
+    SentenceTransformerProvider,
+    embed,
+    get_embedding_provider,
+    get_model_name,
+    get_query_prefix,
+)
 from app.retrieval.ingestion import COLLECTION_NAME, ingest, point_id
 from app.retrieval.search import search, search_hits
 
@@ -112,6 +119,73 @@ class TestEmbeddingModelName:
     ) -> None:
         monkeypatch.setenv("EMBEDDING_MODEL", "")
         assert get_model_name() == "BAAI/bge-small-en-v1.5"
+
+
+class TestQueryPrefix:
+    """ADR-0025: the prefix is put in front of queries only, never of documents."""
+
+    async def test_provider_prepends_the_prefix_to_queries(
+        self, mock_model: MagicMock
+    ) -> None:
+        provider = SentenceTransformerProvider(mock_model, query_prefix="Q: ")
+        await provider.embed("what is a CNN?")
+        mock_model.encode.assert_called_once_with("Q: what is a CNN?")
+
+    async def test_provider_without_prefix_embeds_the_text_as_is(
+        self, mock_model: MagicMock
+    ) -> None:
+        await SentenceTransformerProvider(mock_model).embed("what is a CNN?")
+        mock_model.encode.assert_called_once_with("what is a CNN?")
+
+    def test_ingestion_embeds_documents_without_the_prefix(
+        self, tmp_path: Path, fake_qdrant: FakeQdrant, ingest_model: MagicMock
+    ) -> None:
+        # ingestion takes the raw model, not the provider, so no prefix can reach it
+        paper = {"title": "T", "authors": ["A"], "year": 2024, "abstract": "Imaging."}
+        (tmp_path / "paper.json").write_text(json.dumps(paper))
+        ingest(
+            tmp_path,
+            fake_qdrant,  # type: ignore[arg-type]
+            ingest_model,
+            model_name=MODEL_NAME,
+            tokenizer=WhitespaceTokenizer(max_tokens=200),
+        )
+        texts = [t for call in ingest_model.encode.call_args_list for t in call.args[0]]
+        assert texts
+        assert not any(BGE_QUERY_PREFIX in t for t in texts)
+
+    def test_unset_variable_and_bge_model_gives_the_bge_instruction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("EMBEDDING_QUERY_PREFIX", raising=False)
+        assert get_query_prefix("BAAI/bge-small-en-v1.5") == BGE_QUERY_PREFIX
+        assert get_query_prefix("BAAI/bge-base-en-v1.5") == BGE_QUERY_PREFIX
+
+    def test_default_model_name_is_read_from_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("EMBEDDING_QUERY_PREFIX", raising=False)
+        monkeypatch.setenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+        assert get_query_prefix() == ""
+        monkeypatch.delenv("EMBEDDING_MODEL")
+        assert get_query_prefix() == BGE_QUERY_PREFIX
+
+    def test_empty_variable_switches_the_prefix_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMBEDDING_QUERY_PREFIX", "")
+        assert get_query_prefix("BAAI/bge-small-en-v1.5") == ""
+
+    def test_set_variable_is_used_as_is(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("EMBEDDING_QUERY_PREFIX", "query: ")
+        assert get_query_prefix("BAAI/bge-small-en-v1.5") == "query: "
+        assert get_query_prefix("some/other-model") == "query: "
+
+    def test_non_bge_model_gets_no_prefix_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("EMBEDDING_QUERY_PREFIX", raising=False)
+        assert get_query_prefix("sentence-transformers/all-MiniLM-L6-v2") == ""
 
 
 # ---------------------------------------------------------------------------

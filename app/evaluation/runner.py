@@ -98,6 +98,8 @@ DEFAULT_RUNS_DIR = EVAL_DIR / "runs"
 DEFAULT_REPORTS_DIR = EVAL_DIR / "reports"
 DEFAULT_REWRITES = REPO_ROOT / DEFAULT_REWRITES_PATH
 
+# Frozen copy of the experiment's prefix (recorded in the run files). The app's own
+# default lives in app.retrieval.embedding (ADR-0025); a test keeps the two equal.
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 BGE_BASE_MODEL = "BAAI/bge-base-en-v1.5"
 BGE_BASE_COLLECTION = "eval_bge-base-en-v1.5"
@@ -169,7 +171,11 @@ def _default_client() -> AsyncQdrantClient:
 def _default_embedder(model_name: str) -> EmbeddingProvider:
     from sentence_transformers import SentenceTransformer
 
-    return SentenceTransformerProvider(SentenceTransformer(model_name))
+    # Always an empty provider prefix: the target prepends `config.prefix` itself, so
+    # each named config sets its prefix exactly once. The app's default prefix
+    # (ADR-0025) must not leak into `baseline`, `no_rewrite` or `bge_base`, nor double
+    # up in `prefix`.
+    return SentenceTransformerProvider(SentenceTransformer(model_name), query_prefix="")
 
 
 def _default_llm() -> Any:
