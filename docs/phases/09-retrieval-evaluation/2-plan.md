@@ -170,16 +170,16 @@ T3 touches `tests/test_retrieval.py`; no other G1 task does. T8 is authoring (Cl
   - [x] `tests/test_golden_set.py` runs `validate_golden` on the real file and passes (R1, R6); `run` pre-flight passes against `papers`
 - Note: done; 50 entries, 142 labels (83 grade 2, 59 grade 1). Verify pass: 10 entries got extra labels, 0 rewritten, 0 dropped. Live pre-flight passes (595 chunks). Worst paraphrased overlap 3 words. The `maira_2` banned-label rule matches no real section name (too narrow); owner decision pending (see 3-execute-T8.md).
 
-### [ ] T9: Runs, pooling, freeze v1
+### [x] T9: Runs, pooling, freeze v1
 - Files: `data/eval/rewrites.jsonl`, `data/eval/runs/*.json`, `data/eval/reports/*.md`, `data/eval/CHANGELOG.md`, `data/eval/golden.jsonl`
 - Depends on: T7, T8 · Group: G4
 - Acceptance criteria:
-  - [ ] Ingest bge-base into `eval_bge-base-en-v1.5` (`papers` untouched); generate and commit rewrites
-  - [ ] v0 runs `baseline`, `no_rewrite`, `prefix`, `bge_base`; the truncation-exactness check recorded
-  - [ ] Pooling over the union of all four runs' top-10 (not baseline only, so baseline isn't favoured); additions logged in `CHANGELOG.md`; v0 → v1 baseline Recall@5 change recorded (estimate of missing labels)
-  - [ ] v1 committed, synced to LangSmith (if a key is present, else noted), all four runs re-run on v1; `baseline` also as a LangSmith experiment with matching numbers
-  - [ ] Optional owner spot-check file of 10 entries offered
-- Note:
+  - [x] Ingest bge-base into `eval_bge-base-en-v1.5` (`papers` untouched); generate and commit rewrites
+  - [x] v0 runs `baseline`, `no_rewrite`, `prefix`, `bge_base`; the truncation-exactness check recorded
+  - [x] Pooling over the union of all four runs' top-10 (not baseline only, so baseline isn't favoured); additions logged in `CHANGELOG.md`; v0 → v1 baseline Recall@5 change recorded (estimate of missing labels)
+  - [x] v1 committed, synced to LangSmith (if a key is present, else noted), all four runs re-run on v1; `baseline` also as a LangSmith experiment with matching numbers
+  - [x] Optional owner spot-check file of 10 entries offered
+- Note: done in three agent parts (T9a v0 runs, T9b pooling, T9c v1 runs + LangSmith); reports 3-execute-T9a/T9b/T9c.md. Pooling read all 383 candidates: 8 labels added (142 -> 150), baseline nDCG@5 0.521 -> 0.525, estimate matched. Truncation check: 0 mismatches. Dataset synced (50 examples, tag 11318b7), second sync a no-op; first `aevaluate` experiment passed the equality check (one duplicate experiment exists). Findings for T10: 0.6 threshold inert (off-corpus no-result 0.00 in all runs); 6/50 rewrites start with 'Rewritten question:' and 13/50 are unchanged (app rewrite_node does not strip the prefix). The owner spot-check list is in 3-execute-T8.md.
 
 ### [ ] T10: Comparisons and results ADR
 - Files: `data/eval/reports/*.md`, `docs/adr/0025-retrieval-defaults-after-eval.md`, possibly `app/models/query.py`, `ui/app.py`, `app/retrieval/embedding.py`, `.env.example`

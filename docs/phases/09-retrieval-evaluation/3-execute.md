@@ -162,3 +162,33 @@ Notes:
 ## Next
 
 Wave 4 (G4): T9 (runs, pooling, freeze v1). Needs Ollama for rewrites (up), bge-base ingest into `eval_bge-base-en-v1.5`, and the LangSmith key (in `.env`).
+
+
+---
+
+# Wave 4 (G4: T9), 2026-11-17
+
+T9 ran as three subagent parts: T9a (bge-base ingest, rewrites, four v0 runs, truncation check), T9b (pooling, golden v1), T9c (four v1 runs, comparisons, LangSmith sync and experiment). Reports: `3-execute-T9a.md`, `3-execute-T9b.md`, `3-execute-T9c.md`. Committed in two steps because the sync refuses an uncommitted golden file (11318b7 for v1, then the v1 runs).
+
+## Verification (orchestrating session)
+
+| Check | Result |
+|---|---|
+| `pytest tests/` | 428 passed |
+| `ruff check .` | clean |
+| v1 run files | all four carry golden sha256 4a4733e5fa76 and git 11318b7 |
+| Live | bge-base collection (595 chunks) next to `papers` (595, unchanged); LangSmith dataset synced, experiment equality check passed |
+
+## Findings that matter for T10
+
+1. v1 baseline: nDCG@5 0.525, Recall@5 0.509. Verdicts: prefix replaces baseline (+0.041, lower end +0.012, no type clearly worse); no_rewrite and bge_base: baseline stays (bge_base clearly worse on table).
+2. The 0.6 threshold is inert (off-corpus no-result rate 0.00 in all runs).
+3. The app rewriter leaves "Rewritten question:" in 6 of 50 rewrites; 13 of 50 are unchanged.
+4. Pooling found 8 missing labels in 383 candidates: the v0 labels were close to complete.
+
+## Open points for the owner
+See `3-execute-T9c.md` section 9.
+
+## Next
+
+T10: ADR-0025 and the allowed code changes (threshold constant, prefix setting). Stops for the owner if rewrite-off or bge-base wins.
