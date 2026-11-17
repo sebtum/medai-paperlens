@@ -123,3 +123,42 @@ Two subagents in one working tree, files disjoint. Nothing is committed. T5 and 
 ## Next
 
 Wave 3 (G3): T7 (runner CLI, needs T4, T5, T6) and T8 (golden set v0, needs T2 and T7's `sections` subcommand). T8 depends on T7, so T7 runs first, or the `sections` part is split out.
+
+
+---
+
+# Wave 3 (G3: T7, T8), 2026-11-17
+
+T7 ran as one subagent, then T8 as another (T8 needs T7's `sections`). Docker and Qdrant were started by the owner before T8. Per-task reports: `3-execute-T7.md`, `3-execute-T8.md`. Plain-words version: `3-execute-simple.md`.
+
+## Verification of the combined tree (run by the orchestrating session)
+
+| Gate | Result |
+|---|---|
+| `pytest tests/` | 428 passed (366 + 58 T7 + 4 T8) |
+| `ruff check .` | all checks passed |
+| `mypy app/` | no issues, 42 files |
+| `bandit -r app/` | no issues |
+| Live: `sections` | 595 chunks, all bge-small |
+| Live: `run --config baseline --preflight-only` | passed, 50 questions |
+
+## Task results
+
+| Task | Status | Files |
+|---|---|---|
+| T7 Runner CLI | done | `scripts/eval_retrieval.py`, `app/evaluation/{runner,authoring,langsmith_eval}.py`, `tests/test_eval_runner.py` |
+| T8 Golden set v0 | done | `data/eval/golden.jsonl`, `tests/test_golden_set.py` |
+
+Notes:
+- T7: the agent first put about 1,000 lines in the script. The orchestrator sent it back to move the logic into `app/evaluation/` as the plan says.
+- T8: the agent could not write its own report (tool refusal), so the orchestrator saved it from the agent's text and generated the question table from the real file.
+
+## Open points for the owner
+
+1. `_estimated_tokens` private import (T7). Recommendation: accept.
+2. `pool` cut-off 0.40 (T7). Recommendation: keep.
+3. T8 banned-label rule for `maira_2` is too narrow. Recommendation: leave for v0, extend only if T9 pooling shows the odd sections.
+
+## Next
+
+Wave 4 (G4): T9 (runs, pooling, freeze v1). Needs Ollama for rewrites (up), bge-base ingest into `eval_bge-base-en-v1.5`, and the LangSmith key (in `.env`).

@@ -151,24 +151,24 @@ T3 touches `tests/test_retrieval.py`; no other G1 task does. T8 is authoring (Cl
   - [x] Markdown renderers: run summary (incl. k = 3/5/10 table, crowding, table hit rate, n-gram overlap per type), comparison, threshold curve; each states the config (R4) and the R9 sentence
 - Note: done; 29 tests, in-code fixtures. Run-result model (`RunMeta`, `QuestionRun`, `RunRecord`, `save_run`/`load_run`) lives in `compare.py`. Added `threshold_verdict` and separate cut-offs for A and B; `verdict()` does not enforce nDCG@5 at 0.6 (reports state the cut-offs; accepted). `numpy` now declared in `pyproject.toml`. Evidence tokens need `QuestionRun.chunk_tokens`, filled by T7.
 
-### [ ] T7: Runner CLI (local + LangSmith)
+### [x] T7: Runner CLI (local + LangSmith)
 - Files: `scripts/eval_retrieval.py`, `app/evaluation/langsmith_eval.py`, `tests/test_eval_runner.py`
 - Depends on: T4, T5, T6 · Group: G3
 - Acceptance criteria:
-  - [ ] Subcommands: `run` (pre-flight → retrieve → `runs/<name>.json` + report), `compare A B`, `curve RUN`, `sections` (per-paper section list with chunk ids, for authoring), `pool RUN...` (unlabelled sections in each run's top-10, for adjudication)
-  - [ ] `run --langsmith`: `aevaluate` with evaluator adapters over the T1 functions; a test with a mocked `aevaluate` shows the adapters give the same numbers as the local path and the metadata holds the config (R3)
-  - [ ] `run` fills `QuestionRun.chunk_tokens` (token estimate per hit, from the chunk text already read for the n-gram probe, no text stored) so the k = 3/5/10 report shows evidence tokens instead of `n/a`; also fills `ngram_overlap` and `query`
-  - [ ] Loads `.env` like `scripts/ingest.py`; runs as `python -m scripts.eval_retrieval`
-- Note:
+  - [x] Subcommands: `run` (pre-flight → retrieve → `runs/<name>.json` + report), `compare A B`, `curve RUN`, `sections` (per-paper section list with chunk ids, for authoring), `pool RUN...` (unlabelled sections in each run's top-10, for adjudication)
+  - [x] `run --langsmith`: `aevaluate` with evaluator adapters over the T1 functions; a test with a mocked `aevaluate` shows the adapters give the same numbers as the local path and the metadata holds the config (R3)
+  - [x] `run` fills `QuestionRun.chunk_tokens` (token estimate per hit, from the chunk text already read for the n-gram probe, no text stored) so the k = 3/5/10 report shows evidence tokens instead of `n/a`; also fills `ngram_overlap` and `query`
+  - [x] Loads `.env` like `scripts/ingest.py`; runs as `python -m scripts.eval_retrieval`
+- Note: done; 58 tests, fakes only. Logic is in `app/evaluation/runner.py` and `authoring.py` (script is a thin CLI), so mypy/bandit cover it. Imports the private `_estimated_tokens` from `app/workflow/generate.py` (pending owner sign-off). `sections` ran live against Qdrant (595 chunks); `run`, Ollama rewrites and `aevaluate` not yet run live.
 
-### [ ] T8: Golden set v0 (Claude: draft → verify)
+### [x] T8: Golden set v0 (Claude: draft → verify)
 - Files: `data/eval/golden.jsonl`, `tests/test_golden_set.py`
 - Depends on: T2, T7 (`sections`) · Group: G3
 - Acceptance criteria:
-  - [ ] Draft from chunk text dumped to the scratchpad (never committed). For each label, scan the paper's whole section list (all papers for cross-paper questions)
-  - [ ] Verify pass: reread each labelled section; fix or drop failures; record counts (drafted / fixed / dropped) in Note
-  - [ ] `tests/test_golden_set.py` runs `validate_golden` on the real file and passes (R1, R6); `run` pre-flight passes against `papers`
-- Note:
+  - [x] Draft from chunk text dumped to the scratchpad (never committed). For each label, scan the paper's whole section list (all papers for cross-paper questions)
+  - [x] Verify pass: reread each labelled section; fix or drop failures; record counts (drafted / fixed / dropped) in Note
+  - [x] `tests/test_golden_set.py` runs `validate_golden` on the real file and passes (R1, R6); `run` pre-flight passes against `papers`
+- Note: done; 50 entries, 142 labels (83 grade 2, 59 grade 1). Verify pass: 10 entries got extra labels, 0 rewritten, 0 dropped. Live pre-flight passes (595 chunks). Worst paraphrased overlap 3 words. The `maira_2` banned-label rule matches no real section name (too narrow); owner decision pending (see 3-execute-T8.md).
 
 ### [ ] T9: Runs, pooling, freeze v1
 - Files: `data/eval/rewrites.jsonl`, `data/eval/runs/*.json`, `data/eval/reports/*.md`, `data/eval/CHANGELOG.md`, `data/eval/golden.jsonl`
