@@ -40,7 +40,11 @@ from app.retrieval.embedding import EmbeddingProvider
 from app.retrieval.ingestion import point_id
 from app.retrieval.search import search_hits
 from app.workflow.rewrite import _PROMPT as REWRITE_PROMPT
-from app.workflow.rewrite import make_rewrite_node
+from app.workflow.rewrite import (
+    REWRITE_CLEANUP_VERSION,
+    clean_rewrite,
+    make_rewrite_node,
+)
 from app.workflow.state import WorkflowState
 
 DEFAULT_DEPTH = 20
@@ -122,13 +126,19 @@ def _sha256(text: str) -> str:
 
 
 def rewrite_prompt_sha256() -> str:
-    """Hash of the real rewrite prompt, so editing the prompt invalidates the cache."""
-    return _sha256(REWRITE_PROMPT)
+    """Hash of the real rewrite prompt plus the cleanup version.
+
+    Editing the prompt or bumping `REWRITE_CLEANUP_VERSION` invalidates the cache.
+    """
+    return _sha256(f"{REWRITE_PROMPT}\n{REWRITE_CLEANUP_VERSION}")
 
 
 @dataclass(frozen=True)
 class RewriteKey:
-    """Cache key: `(question id, sha256(question), rewrite model, sha256(prompt))`."""
+    """Cache key: question id, sha256(question), rewrite model, rewrite prompt hash.
+
+    The prompt hash covers the prompt and `REWRITE_CLEANUP_VERSION`.
+    """
 
     question_id: str
     question_sha256: str
@@ -199,7 +209,8 @@ class _RecordingRewriteLlm:
     """Wraps the LLM for the rewrite node: pins temperature/seed and records failures.
 
     `rewrite_node` swallows LLM errors and empty output and returns the original
-    question; `failures` lets the caller notice that.
+    question; `failures` lets the caller notice that. Output that is empty only after
+    `clean_rewrite` (for example a bare "Rewritten question:") counts as empty too.
     """
 
     def __init__(self, inner: LlmProvider) -> None:
@@ -219,7 +230,7 @@ class _RecordingRewriteLlm:
         except Exception as exc:
             self.failures.append(f"{type(exc).__name__}: {exc}")
             raise
-        if not text.strip():
+        if not clean_rewrite(text):
             self.failures.append("empty rewrite")
         return text
 

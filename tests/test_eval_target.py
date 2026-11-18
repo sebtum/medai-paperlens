@@ -270,13 +270,64 @@ class TestRewriteCache:
         with pytest.raises(RewriteCacheMissError):
             await rewrite_query(entry, REWRITER, cache, None)
 
-    def test_prompt_hash_is_the_hash_of_the_real_prompt(self) -> None:
+    def test_prompt_hash_covers_the_real_prompt_and_the_cleanup_version(self) -> None:
         import hashlib
 
         from app.workflow import rewrite
 
-        expected = hashlib.sha256(rewrite._PROMPT.encode("utf-8")).hexdigest()
+        text = f"{rewrite._PROMPT}\n{rewrite.REWRITE_CLEANUP_VERSION}"
+        expected = hashlib.sha256(text.encode("utf-8")).hexdigest()
         assert rewrite_prompt_sha256() == expected
+
+    async def test_a_new_cleanup_version_misses_the_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entry = make_entry()
+        cache = RewriteCache(tmp_path / "rewrites.jsonl")
+        cache.put(RewriteKey.for_entry(entry, REWRITER), "old")
+
+        monkeypatch.setattr(target, "REWRITE_CLEANUP_VERSION", "next")
+        with pytest.raises(RewriteCacheMissError):
+            await rewrite_query(entry, REWRITER, cache, None)
+
+    async def test_a_leaked_label_is_cleaned_before_it_is_stored(
+        self, tmp_path: Path
+    ) -> None:
+        entry = make_entry()
+        path = tmp_path / "rewrites.jsonl"
+        cache = RewriteCache(path)
+        llm = FakeLlm(answer="Rewritten question: pneumothorax detection")
+
+        assert await rewrite_query(entry, REWRITER, cache, llm) == (
+            "pneumothorax detection"
+        )
+        assert json.loads(path.read_text(encoding="utf-8"))["rewrite"] == (
+            "pneumothorax detection"
+        )
+
+    async def test_output_empty_after_cleaning_is_a_failure(
+        self, tmp_path: Path
+    ) -> None:
+        cache = RewriteCache(tmp_path / "rewrites.jsonl")
+        llm = FakeLlm(answer="Rewritten question:")
+        with pytest.raises(RewriteFallbackError, match="empty rewrite"):
+            await rewrite_query(make_entry(), REWRITER, cache, llm)
+        assert len(cache) == 0
+
+    def test_committed_rewrites_have_no_leaked_label(self) -> None:
+        cache = RewriteCache(target.DEFAULT_REWRITES_PATH)
+        assert len(cache) > 0
+        leaked = [
+            key.question_id
+            for key in cache._rewrites
+            if cache._rewrites[key].lower().lstrip().startswith("rewritten question")
+        ]
+        assert leaked == []
+
+    def test_committed_rewrites_use_the_current_prompt_hash(self) -> None:
+        cache = RewriteCache(target.DEFAULT_REWRITES_PATH)
+        hashes = {key.prompt_sha256 for key in cache._rewrites}
+        assert hashes == {rewrite_prompt_sha256()}
 
     def test_bad_cache_line_names_the_line(self, tmp_path: Path) -> None:
         path = tmp_path / "rewrites.jsonl"

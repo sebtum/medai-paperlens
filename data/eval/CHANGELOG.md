@@ -43,3 +43,22 @@ Off-corpus questions q046 to q050: the top hits of all four runs were read, and 
 | q045 | multi_section | pathalign | Introduction | 1 | Says one variant is trained with the contrastive loss only and the second adds a frozen LLM in the two-stage setup. No query-vector count. |
 
 Golden set LLM-labelled (Claude), not human-verified.
+
+## Rewrite cache cleanup (2026-11-18): Phase 10, rewriter leak
+
+This changes the stored rewrites in `rewrites.jsonl`, not the golden set. No question, id, type, label or `source_chunks` entry changed, so the golden hash is the same.
+
+**What was wrong.** For 6 of the 50 questions, the small rewrite model repeated the label "Rewritten question:" at the start of its answer, and that label was stored and searched with. The rewriter now strips such a label (any case, repeated), plus surrounding quotes and whitespace (`clean_rewrite` in `app/workflow/rewrite.py`).
+
+**What was done.** The stored rewrites were cleaned in place. Ollama was not called, so the other 44 rewrites are byte-for-byte the same text and the next run measures only this fix. The prompt text did not change. The cache key now hashes the prompt plus a cleanup version (`REWRITE_CLEANUP_VERSION`, now `1`), so all 50 lines got a new key and a later change to the cleanup invalidates the file.
+
+| Question | Text before | Text after |
+|---|---|---|
+| q009 | Rewritten question: What hardware and duration did RoentGen fine-tune for 60k training steps? | What hardware and duration did RoentGen fine-tune for 60k training steps? |
+| q015 | Rewritten question: Is accuracy higher when answer options are provided than when the answer must be typed out freely? | Is accuracy higher when answer options are provided than when the answer must be typed out freely? |
+| q029 | Rewritten question: What is the F1 score achieved by the gaze-guided model in the clinical-efficacy comparison, and which compared method scores higher? | What is the F1 score achieved by the gaze-guided model in the clinical-efficacy comparison, and which compared method scores higher? |
+| q031 | Rewritten question: What were the total average multi-choice and free-text scores of the best-performing model and of random guessing in the 3D CT question-answering benchmark? | What were the total average multi-choice and free-text scores of the best-performing model and of random guessing in the 3D CT question-answering benchmark? |
+| q035 | Rewritten question: How did the scores of chest X-ray report generation change after the classification task was removed from the 84B model? | How did the scores of chest X-ray report generation change after the classification task was removed from the 84B model? |
+| q042 | Rewritten question: Which datasets were selected for the intersectional fairness study, why were other datasets excluded, and how were the cohorts split into subgroups and train, validation, and test sets? | Which datasets were selected for the intersectional fairness study, why were other datasets excluded, and how were the cohorts split into subgroups and train, validation, and test sets? |
+
+Exactly 6 rewrite texts changed (q009, q015, q029, q031, q035, q042). Runs saved before this change (Phase 9) used the old rewrites for these 6 questions.

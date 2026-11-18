@@ -1,5 +1,5 @@
 import os
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -61,6 +61,64 @@ def _no_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in list(os.environ):
         if name.startswith(("LANGSMITH_", "LANGCHAIN_")):
             monkeypatch.delenv(name)
+
+
+class FakeReranker:
+    """Shared reranker test double satisfying ``Reranker`` (no model, no network).
+
+    ``score`` returns ``scores`` when given (one per passage, in order). Otherwise
+    each passage scores the share of the query's words it contains, so a passage that
+    repeats the query ranks high. With ``error`` set, ``score`` raises it. ``calls``
+    records every ``(query, passages)`` pair.
+    """
+
+    def __init__(
+        self,
+        scores: Sequence[float] | None = None,
+        error: Exception | None = None,
+        model_name: str = "fake-reranker",
+    ) -> None:
+        self.scores = list(scores) if scores is not None else None
+        self.error = error
+        self._model_name = model_name
+        self.calls: list[tuple[str, list[str]]] = []
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    async def score(self, query: str, passages: Sequence[str]) -> list[float]:
+        self.calls.append((query, list(passages)))
+        if self.error is not None:
+            raise self.error
+        if self.scores is not None:
+            return self.scores[: len(passages)]
+        words = set(query.lower().split())
+        if not words:
+            return [0.0 for _ in passages]
+        return [len(words & set(p.lower().split())) / len(words) for p in passages]
+
+
+def _refuse_real_cross_encoder(*args: Any, **kwargs: Any) -> Any:
+    raise AssertionError(
+        "A test tried to load a real CrossEncoder model. Use FakeReranker."
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_reranker(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """No test loads a real reranker model, whatever the developer's shell has set.
+
+    `RERANKER_MODEL` is cleared, the `CrossEncoder` constructor used by `get_reranker`
+    raises, and the `get_reranker` singleton cache is emptied before and after.
+    """
+    from app.retrieval import rerank
+
+    monkeypatch.delenv("RERANKER_MODEL", raising=False)
+    monkeypatch.setattr(rerank, "CrossEncoder", _refuse_real_cross_encoder)
+    rerank.get_reranker.cache_clear()
+    yield
+    rerank.get_reranker.cache_clear()
 
 
 @pytest.fixture

@@ -30,16 +30,16 @@ G1: T1 ‖ T3 → G2: T2 ‖ T5 ‖ T8 → G3: T4 → G4: T6 → G5: T7 (owner r
 
 ## Tasks
 
-### [ ] T1: Fix the rewriter leak
+### [x] T1: Fix the rewriter leak
 The rewriter's output loses a leading "Rewritten question:", and the 6 stored rewrites that have it are cleaned.
 - Files: `app/workflow/rewrite.py`, `app/evaluation/target.py`, `data/eval/rewrites.jsonl`, `data/eval/CHANGELOG.md`, `tests/test_workflow.py`, `tests/test_eval_target.py`
 - Depends on: — · Group: G1
 - Acceptance criteria:
-  - [ ] A pure `clean_rewrite(text)` removes a leading `Rewritten question:` (any case, repeated), surrounding quotes and whitespace. `rewrite_node` uses it before the fallback.
-  - [ ] `_PROMPT` is unchanged. The cache key hashes the prompt plus a `REWRITE_CLEANUP_VERSION`.
-  - [ ] `_RecordingRewriteLlm` counts an output that is empty *after* cleaning as a failure.
-  - [ ] `rewrites.jsonl` is rewritten once, with new keys and cleaned text. Exactly 6 rewrite texts change, which is logged in `CHANGELOG.md`. A test checks that no stored rewrite starts with the prefix.
-- Note:
+  - [x] A pure `clean_rewrite(text)` removes a leading `Rewritten question:` (any case, repeated), surrounding quotes and whitespace. `rewrite_node` uses it before the fallback.
+  - [x] `_PROMPT` is unchanged. The cache key hashes the prompt plus a `REWRITE_CLEANUP_VERSION`.
+  - [x] `_RecordingRewriteLlm` counts an output that is empty *after* cleaning as a failure.
+  - [x] `rewrites.jsonl` is rewritten once, with new keys and cleaned text. Exactly 6 rewrite texts change, which is logged in `CHANGELOG.md`. A test checks that no stored rewrite starts with the prefix.
+- Note: Done 2026-11-18. Exactly 6 changed (q009, q015, q029, q031, q035, q042), no Ollama call. Report: `3-execute-T1.md`.
 
 ### [ ] T2: Clean baseline re-run
 Re-run the four Phase 9 setups with the clean rewrites and check that the Phase 9 outcomes still hold.
@@ -51,18 +51,18 @@ Re-run the four Phase 9 setups with the clean rewrites and check that the Phase 
   - [ ] **Stop and ask the owner** if an ADR-0025 outcome flips (the prefix stops winning, or no-rewrite now wins).
 - Note:
 
-### [ ] T3: Reranker provider
+### [x] T3: Reranker provider
 A small reranker interface plus a sentence-transformers version, built like the embedder, with no new dependency.
 - Files: `app/retrieval/rerank.py`, `tests/test_rerank.py`, `tests/conftest.py`
 - Depends on: — · Group: G1
 - Acceptance criteria:
-  - [ ] `Reranker` Protocol: `async score(query, passages) -> list[float]` and `model_name`. `CrossEncoderReranker` runs in a thread (`asyncio.to_thread`) with sigmoid output.
-  - [ ] `get_reranker_model_name()` reads `RERANKER_MODEL` (empty or `none` = off). `get_reranker() -> Reranker | None` is an `lru_cache` singleton and the FastAPI dependency.
-  - [ ] `rerank_passage()` as in Decisions.
-  - [ ] `FakeReranker` in conftest. An autouse fixture ensures no test loads a real model.
-  - [ ] One manual check (not in CI) that all three model IDs load with `CrossEncoder` and score a pair. Exact IDs and revisions are recorded in Note.
+  - [x] `Reranker` Protocol: `async score(query, passages) -> list[float]` and `model_name`. `CrossEncoderReranker` runs in a thread (`asyncio.to_thread`) with sigmoid output.
+  - [x] `get_reranker_model_name()` reads `RERANKER_MODEL` (empty or `none` = off). `get_reranker() -> Reranker | None` is an `lru_cache` singleton and the FastAPI dependency.
+  - [x] `rerank_passage()` as in Decisions.
+  - [x] `FakeReranker` in conftest. An autouse fixture ensures no test loads a real model.
+  - [x] One manual check (not in CI) that all three model IDs load with `CrossEncoder` and score a pair. Exact IDs and revisions are recorded in Note.
   - Details: MiniLM may now be `cross-encoder/ms-marco-MiniLM-L6-v2` (renamed, old ID redirects). `max_length=512` for all three.
-- Note:
+- Note: Done 2026-11-18. All three model IDs load and score (MiniLM `cross-encoder/ms-marco-MiniLM-L-6-v2` rev 233902d, `BAAI/bge-reranker-base` rev 2cfc18c, `ncbi/MedCPT-Cross-Encoder` rev 71caf65). Explicit sigmoid needed for MiniLM only. Report: `3-execute-T3.md`.
 
 ### [ ] T4: Golden set v2: 15 near-miss questions
 Claude writes 15 more off-topic questions that are medical AI but not covered by the 10 papers. They are written before any reranker result is seen.
