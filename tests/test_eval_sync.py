@@ -15,6 +15,7 @@ from app.evaluation.golden import GoldenEntry, Label, QuestionType, golden_sha25
 from app.evaluation.langsmith_sync import (
     DATASET_NAME,
     HASH_METADATA_KEY,
+    LATEST_VERSION_TAG,
     GoldenInvalidError,
     GoldenNotCommittedError,
     SyncError,
@@ -97,7 +98,8 @@ class FakeLangSmith:
         self, *, dataset_name: str | None = None, tag: str | None = None, **kwargs: Any
     ) -> Any:
         self.calls.append(("read_dataset_version", tag))
-        return SimpleNamespace(as_of=AS_OF, tags=[tag])
+        tags = [LATEST_VERSION_TAG] + [name for _, _, name in self.tags]
+        return SimpleNamespace(as_of=AS_OF, tags=tags)
 
     def update_dataset_tag(
         self, *, dataset_name: str | None = None, as_of: Any, tag: str
@@ -212,6 +214,31 @@ def test_partial_earlier_sync_is_repaired() -> None:
 
     assert not result.unchanged
     assert (result.created, result.updated, result.deleted) == (0, 2, 0)
+
+
+def test_retry_after_failed_tag_repairs_the_tag() -> None:
+    """Examples written, tagging failed: the next sync adds the tag and nothing else."""
+    client = FakeLangSmith()
+    real_tag = client.update_dataset_tag
+
+    def failing_tag(**kwargs: Any) -> None:
+        raise RuntimeError("tagging failed")
+
+    client.update_dataset_tag = failing_tag  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        sync_golden(client, ENTRIES, SHA, GIT)
+    assert client.tags == []
+    client.update_dataset_tag = real_tag  # type: ignore[method-assign]
+    client.calls.clear()
+
+    result = sync_golden(client, ENTRIES, SHA, GIT)
+
+    assert not result.unchanged
+    assert result.tag == GIT
+    assert (result.created, result.updated, result.deleted) == (0, 0, 0)
+    assert client.writes == ["update_dataset_tag"]
+    assert client.tags[-1] == (DATASET_NAME, AS_OF, GIT)
+    assert sync_golden(client, ENTRIES, SHA, GIT).unchanged
 
 
 def test_empty_entries_refused() -> None:

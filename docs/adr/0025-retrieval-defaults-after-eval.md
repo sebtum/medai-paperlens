@@ -216,7 +216,8 @@ Negative:
   fix, rebuild `data/eval/rewrites.jsonl` and re-run the rewrite comparison.
 - A better refusal signal than a score cut-off for off-corpus questions (outside
   Phase 9; candidates are a reranker score, an LLM check or a margin between top hits).
-  More than 5 off-corpus golden questions would be needed to judge it.
+  More than 5 off-corpus golden questions would be needed to judge it. The ranked options are in
+  `docs/roadmap.md`, section "Phase 9 findings that feed Phase 10".
 - A human check of a sample of the golden set (10-entry spot-check list in
   `docs/phases/09-retrieval-evaluation/3-execute-T8.md`).
 - Messier test queries for the rewrite question.

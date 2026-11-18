@@ -96,11 +96,19 @@ The decision above stands. These details were settled while building and running
   labels, at least among sections that these four setups retrieve; sections that none of
   them retrieves cannot be found by pooling. The method and every addition are in
   `data/eval/CHANGELOG.md`.
-- **Banned-label rule.** The `maira_2` rule in `validate_golden` matches no real section
-  name, so it bans nothing. The labels avoid the odd Phase 8 sections because the author
-  checked them, not because the validator enforces it. In the pool those sections were
-  1.6 % of the top-5 slots (14 of 900) and none answers a question. The rule was left as
-  is.
+- **Banned-label rule.** The first `maira_2` rule (appendix-style headings) matched no
+  real section name, so it banned nothing. The Phase 9 verify found this (an independent
+  Codex review added `Additional qualitative examples > Current Study` to the real set
+  and the validator accepted it). Fixed: `validate_golden` now also bans an explicit list
+  of 13 real `maira_2` false headings (the example-figure labels under `Additional
+  qualitative examples` and the annotation-protocol sections under `Qualitative
+  evaluation of twenty random ...`, from the T8 notes), matched on the whole section
+  label. No existing golden label is on the list, so `golden.jsonl` and its hash did not
+  change. In the pool those sections were 1.6 % of the top-5 slots (14 of 900) and none
+  answers a question.
+- **Factual means one paper.** The `factual` constraint "single paper" was in this ADR
+  but not in the validator. The Phase 9 verify added it; every real factual entry
+  already satisfied it.
 - **Report wording.** Every report states "golden set LLM-labelled (Claude), not
   human-verified". The optional owner spot-check list (10 entries) is in
   `docs/phases/09-retrieval-evaluation/3-execute-T8.md`.

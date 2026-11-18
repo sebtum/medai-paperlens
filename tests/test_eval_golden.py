@@ -137,6 +137,32 @@ def test_coverage_paper_labelled_too_rarely() -> None:
     )
 
 
+def test_real_maira_labels_used_by_the_golden_set_are_not_banned() -> None:
+    manifests = {**MANIFESTS, "maira_2": {"title": "X"}}
+    entries = make_valid_entries()
+    i = first_of(entries, QuestionType.FACTUAL)
+    ok = [
+        Label(
+            paper_id="maira_2",
+            section="Qualitative evaluation of twenty random MAIRA-2 generated "
+            "reports > Method",
+            grade=1,
+        ),
+        Label(paper_id="maira_2", section="Extended methods > Rules", grade=1),
+    ]
+    entries = replace(entries, i, relevant=ok, source_chunks=["maira_2:1"])
+    assert not any("banned label" in v for v in validate_golden(entries, manifests))
+
+
+def test_factual_rejects_labels_from_two_papers() -> None:
+    entries = make_valid_entries()
+    i = first_of(entries, QuestionType.FACTUAL)
+    extra = Label(paper_id=PAPER_IDS[5], section="Methods", grade=1)
+    entries = replace(entries, i, relevant=[*entries[i].relevant, extra])
+    violations = validate_golden(entries, MANIFESTS)
+    assert any("factual labels must stay in one paper" in v for v in violations)
+
+
 def test_cross_paper_single_paper() -> None:
     entries = make_valid_entries()
     i = first_of(entries, QuestionType.CROSS_PAPER)
@@ -282,6 +308,15 @@ def test_derive_aliases() -> None:
         ("maira_2", "Appendix"),
         ("maira_2", "A Data > Prompts"),
         ("maira_2", "B.2 Prompt details"),
+        # The real false headings found in the corpus (Phase 9 verify).
+        ("maira_2", "Additional qualitative examples > Current Study"),
+        ("maira_2", "Additional qualitative examples > FINDINGS phrases"),
+        ("maira_2", "additional qualitative examples > grounded findings"),
+        (
+            "maira_2",
+            "Qualitative evaluation of twenty random MAIRA-2 generated reports"
+            " > Workflow overview",
+        ),
     ],
 )
 def test_banned_labels(paper_id: str, section: str) -> None:

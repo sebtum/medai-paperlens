@@ -80,6 +80,41 @@ def recall_at_k(
     return found / len(labels)
 
 
+def recall_ceiling_at_k(
+    hits: Sequence[RankedHit], labels: Labels, k: int, threshold: float
+) -> float:
+    """Recall against what ``k`` slots allow: ``found / min(k, |R|)``.
+
+    A question with 7 labels cannot score above 5/7 recall at k = 5. This divides by
+    the best possible count instead, so 1.0 means "found as many as k slots allow".
+    Reported next to recall; it is not used by the decision rule.
+    """
+    _validated(labels)
+    if k <= 0:
+        return 0.0
+    ranked = _ranked_sections(hits, k, threshold)
+    found = sum(1 for key in ranked if key in labels)
+    return found / min(k, len(labels))
+
+
+def precision_at_k(
+    hits: Sequence[RankedHit], labels: Labels, k: int, threshold: float
+) -> float:
+    """Share of the returned top-``k`` chunks that sit in a labelled section.
+
+    Counted over chunks, not collapsed sections: it measures how much of the context
+    that would be sent is on target. The denominator is the number of chunks that
+    pass the cut (0 when none do). Reported next to recall; it is not used by the
+    decision rule.
+    """
+    _validated(labels)
+    kept = cut(hits, k, threshold)
+    if not kept:
+        return 0.0
+    relevant = sum(1 for hit in kept if (hit.paper_id, hit.section) in labels)
+    return relevant / len(kept)
+
+
 def mrr_at_k(
     hits: Sequence[RankedHit], labels: Labels, k: int, threshold: float
 ) -> float:

@@ -24,8 +24,11 @@ dataset is never edited in its UI.
   stored on each example, not on the dataset.)
 - Otherwise it creates new examples and updates existing ones (example id = `uuid5` of the
   entry id, so ids are stable), deletes those no longer in the file, and tags the dataset
-  version with the short git hash. Writing the hash on every example also lets an
-  interrupted sync repair itself on the next run.
+  version with the short git hash. Writing the hash on every example lets an
+  interrupted sync repair itself on the next run. If the examples are current but the
+  newest version carries no git-hash tag (tagging failed), the next sync writes only the
+  tag (fixed in the Phase 9 verify; before that it reported "unchanged" and left the
+  version untagged).
 - It validates the file with `validate_golden` first and refuses an invalid set.
 - It refuses to run while `golden.jsonl` has uncommitted changes, so every tag matches a
   commit.

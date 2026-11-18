@@ -78,9 +78,37 @@ _BANNED_SEGMENT_PREFIXES: tuple[str, ...] = (
     "visual input example",
 )
 # `maira_2` appendix labels: `Appendix ...`, or a dotless/dotted appendix letter heading
-# such as `A Data`, `B.2 Prompts`. Only the top-level segment is tested.
+# such as `A Data`, `B.2 Prompts`. Only the top-level segment is tested. The real corpus
+# has no such headings (checked against the 595-chunk collection), so this alone bans
+# nothing; the explicit list below covers the real false headings.
 _MAIRA_APPENDIX_RE = re.compile(r"^((?i:appendix)\b|[A-Z]\d*(\.\d+)*[\s.])")
 _MAIRA_PAPER_ID = "maira_2"
+# Real `maira_2` sections that are not real headings: labels from example figures and
+# an annotation-protocol document that Docling placed under a wrong parent (listed in
+# the Phase 9 T8 notes). Matched against the whole section label, case-insensitive.
+_MAIRA_FALSE_SECTIONS: frozenset[str] = frozenset(
+    f"{parent}{SECTION_SEPARATOR}{child}".lower()
+    for parent, children in {
+        "Additional qualitative examples": (
+            "MAIRA-2 model inputs",
+            "FINDINGS phrases",
+            "Grounded FINDINGS",
+            "Current Study",
+        ),
+        "Qualitative evaluation of twenty random MAIRA-2 generated reports": (
+            "Workflow overview",
+            "Workflow summary",
+            "Sample-level quality control",
+            "Options",
+            "Phrase labels",
+            "Optional finding categorization",
+            "Image annotation",
+            "Handling of prior images",
+            "Additional examples/scenarios with instructions",
+        ),
+    }.items()
+    for child in children
+)
 
 _SOURCE_CHUNK_RE = re.compile(r"^(?P<paper>[A-Za-z0-9_\-]+):(?P<index>\d+)$")
 
@@ -196,6 +224,11 @@ def _banned_label_reason(label: Label) -> str | None:
         and _MAIRA_APPENDIX_RE.match(segments[0])
     ):
         return f"maira_2 appendix label {segments[0]!r}"
+    if (
+        label.paper_id == _MAIRA_PAPER_ID
+        and SECTION_SEPARATOR.join(segments).lower() in _MAIRA_FALSE_SECTIONS
+    ):
+        return f"maira_2 false heading {label.section!r}"
     return None
 
 
@@ -295,6 +328,12 @@ def _validate_entry(
             out.append(f"{tag}: needs at least one relevant label")
         if not entry.source_chunks:
             out.append(f"{tag}: needs at least one source_chunk")
+
+    if entry.type is QuestionType.FACTUAL and len(papers) > 1:
+        out.append(
+            f"{tag}: factual labels must stay in one paper, found {len(papers)} "
+            f"({', '.join(sorted(papers))})"
+        )
 
     if entry.type is QuestionType.CROSS_PAPER and len(papers) < 2:
         out.append(

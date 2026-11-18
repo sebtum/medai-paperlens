@@ -416,6 +416,11 @@ def test_summarize_run_numbers() -> None:
     assert by_type[OFF].empty_rate == 1.0  # off-score 0.5 < 0.6
     assert summary.no_result_rate_off_corpus == 1.0
     assert summary.by_k[0].table_hit_rate == 1.0
+    # Precision and recall vs ceiling are reported next to the other scores.
+    assert all(0.0 <= row.precision <= 1.0 for row in summary.by_k)
+    assert all(row.recall_ceiling >= row.recall for row in summary.by_k)
+    assert by_type[F].precision is not None and by_type[F].recall_ceiling is not None
+    assert by_type[OFF].precision is None and by_type[OFF].recall_ceiling is None
 
 
 # ------------------------------------------------------------------ reports

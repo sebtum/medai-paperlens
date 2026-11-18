@@ -123,7 +123,7 @@ Streamlit UI → FastAPI Backend → LangGraph Workflow
 - `scripts/ingest.py` — CLI ingestion script; `--papers-dir` / `PAPERS_DIR`, `--parsed-dir` / `PARSED_DIR`; `--collection` (default `papers`, the app collection; eval embedders use `eval_<model-slug>`); `--overwrite` flag; loads `.env`; `sys.exit(1)` on failure.
 
 **Evaluation layer** (Phase 9; ADR-0023, ADR-0024, ADR-0025; no generation, retrieval only)
-- `app/evaluation/metrics.py` — pure `RankedHit`, `cut`, `collapse_sections`, `recall_at_k`, `mrr_at_k`, `ndcg_at_k`, crowding and table-hit helpers over `(paper_id, section)` labels.
+- `app/evaluation/metrics.py` — pure `RankedHit`, `cut`, `collapse_sections`, `recall_at_k`, `mrr_at_k`, `ndcg_at_k`, `precision_at_k` and `recall_ceiling_at_k` (reported, not in the decision rule), crowding and table-hit helpers over `(paper_id, section)` labels.
 - `app/evaluation/golden.py` — `GoldenEntry` / `Label` / `QuestionType`, `QUOTAS`, `load_golden`, `golden_sha256`, `validate_golden` (the golden-set rules).
 - `app/evaluation/target.py` — `RetrievalConfig`, `retrieve_ranked` (top 20 at threshold 0, one retrieval per run), the committed rewrite cache (a rewrite fallback is a run failure), `preflight` (stale-label and embedding-model check against Qdrant).
 - `app/evaluation/compare.py` — run records (`save_run` / `load_run`), stratified paired bootstrap, `verdict()` (the decision rule), per-type means and win/loss/tie counts.
@@ -155,7 +155,7 @@ Do not add the next layer until the current one is stable:
 4. ~~Streamlit UI~~ ✓
 5. ~~Docker Compose for full-stack local run~~ ✓
 
-Phases 7–11 (streaming, full-text ingestion, retrieval eval, rerank/hybrid, generation eval) are ordered in [`docs/roadmap.md`](docs/roadmap.md). Phase 7 (streaming) is merged (PR #11). Phase 8 (full-text ingestion) is verified (PR pending merge). Phase 9 (retrieval evaluation) is executed (ADR-0023/0024/0025; the BGE query prefix is the new default, the other defaults stay); its Verify stage and PR are pending; next is Phase 10. Write each phase's ADRs during that phase's planning, not in advance.
+Phases 7–11 (streaming, full-text ingestion, retrieval eval, rerank/hybrid, generation eval) are ordered in [`docs/roadmap.md`](docs/roadmap.md). Phase 7 (streaming) is merged (PR #11). Phase 8 (full-text ingestion) is merged (PR #12). Phase 9 (retrieval evaluation) is verified (ADR-0023/0024/0025; the BGE query prefix is the new default, the other defaults stay; `docs/phases/09-retrieval-evaluation/4-verify.md`); its PR is pending; next is Phase 10. Write each phase's ADRs during that phase's planning, not in advance.
 
 ### Working process
 

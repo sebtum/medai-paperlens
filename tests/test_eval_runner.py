@@ -1138,6 +1138,25 @@ class TestSections:
         assert not inside.exists()
         assert capsys.readouterr().out == ""
 
+    @pytest.mark.parametrize(
+        "bad_id",
+        ["../escaped", "..\\escaped", "sub/dir", "C:\\abs\\evil", "/abs/evil", "a b"],
+    )
+    def test_dump_text_rejects_a_paper_id_that_is_not_a_plain_name(
+        self, tmp_path: Path, bad_id: str
+    ) -> None:
+        points = [*corpus_points(), make_point(bad_id, "Results", 0, text="x")]
+        harness = Harness(tmp_path, points=points)
+        target = tmp_path / "dump"
+
+        code = cli_main(
+            ["sections", "--dump-text", str(target)], services=harness.services()
+        )
+
+        assert code == 1
+        assert not (tmp_path / "escaped.txt").exists()
+        assert not list(target.glob("*"))  # nothing written, not even the good papers
+
     def test_empty_collection_exits_nonzero(self, tmp_path: Path) -> None:
         harness = Harness(tmp_path, points=[])
         assert cli_main(["sections"], services=harness.services()) == 1

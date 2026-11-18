@@ -36,11 +36,13 @@ from app.evaluation.metrics import (
     is_empty,
     mrr_at_k,
     ndcg_at_k,
+    precision_at_k,
     recall_at_k,
+    recall_ceiling_at_k,
     table_hit,
 )
 
-Metric = Literal["recall", "mrr", "ndcg"]
+Metric = Literal["recall", "mrr", "ndcg", "precision", "recall_ceiling"]
 
 PRIMARY_METRIC: Metric = "ndcg"
 DEFAULT_RESAMPLES = 1000
@@ -58,6 +60,8 @@ _METRIC_FUNCTIONS: dict[
     "recall": recall_at_k,
     "mrr": mrr_at_k,
     "ndcg": ndcg_at_k,
+    "precision": precision_at_k,
+    "recall_ceiling": recall_ceiling_at_k,
 }
 
 
@@ -392,6 +396,8 @@ class KRow:
     recall: float
     ndcg: float
     mrr: float
+    precision: float
+    recall_ceiling: float
     crowding: float | None
     table_hit_rate: float | None
     evidence_tokens: float | None
@@ -406,6 +412,8 @@ class TypeRow:
     recall: float | None
     ndcg: float | None
     mrr: float | None
+    precision: float | None
+    recall_ceiling: float | None
     empty_rate: float
     mean_overlap: float | None
     max_overlap: int | None
@@ -460,6 +468,8 @@ def summarize_run(
                 recall=_mean(scores["recall"]),
                 ndcg=_mean(scores["ndcg"]),
                 mrr=_mean(scores["mrr"]),
+                precision=_mean(scores["precision"]),
+                recall_ceiling=_mean(scores["recall_ceiling"]),
                 crowding=crowding(run, golden, cutoff),
                 table_hit_rate=table_hit_rate(run, golden, cutoff),
                 evidence_tokens=evidence_tokens(run, golden, cutoff),
@@ -473,7 +483,7 @@ def summarize_run(
         overlaps = [q.ngram_overlap for _, q in members if q.ngram_overlap is not None]
         empty = _mean([float(is_empty(q.hits, threshold)) for _, q in members])
         if qtype is QuestionType.OFF_CORPUS:
-            recall = ndcg = mrr = None
+            recall = ndcg = mrr = precision = recall_ceiling = None
         else:
             recall = _mean(
                 [
@@ -493,6 +503,18 @@ def summarize_run(
                     for e, q in members
                 ]
             )
+            precision = _mean(
+                [
+                    precision_at_k(q.hits, labels_of(e), primary.k, threshold)
+                    for e, q in members
+                ]
+            )
+            recall_ceiling = _mean(
+                [
+                    recall_ceiling_at_k(q.hits, labels_of(e), primary.k, threshold)
+                    for e, q in members
+                ]
+            )
         per_type.append(
             TypeRow(
                 type=qtype,
@@ -500,6 +522,8 @@ def summarize_run(
                 recall=recall,
                 ndcg=ndcg,
                 mrr=mrr,
+                precision=precision,
+                recall_ceiling=recall_ceiling,
                 empty_rate=empty,
                 mean_overlap=_mean([float(o) for o in overlaps]) if overlaps else None,
                 max_overlap=max(overlaps) if overlaps else None,

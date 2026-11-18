@@ -14,7 +14,9 @@ from app.evaluation.metrics import (
     is_empty,
     mrr_at_k,
     ndcg_at_k,
+    precision_at_k,
     recall_at_k,
+    recall_ceiling_at_k,
     table_hit,
 )
 
@@ -210,7 +212,17 @@ def test_k_zero_gives_zero_metrics() -> None:
     assert ndcg_at_k(HITS, LABELS, k=0, threshold=0.0) == 0.0
 
 
-@pytest.mark.parametrize("metric", [recall_at_k, mrr_at_k, ndcg_at_k, table_hit])
+@pytest.mark.parametrize(
+    "metric",
+    [
+        recall_at_k,
+        mrr_at_k,
+        ndcg_at_k,
+        table_hit,
+        precision_at_k,
+        recall_ceiling_at_k,
+    ],
+)
 def test_empty_labels_raise(metric) -> None:  # type: ignore[no-untyped-def]
     with pytest.raises(ValueError, match="labels must not be empty"):
         metric(HITS, {}, k=5, threshold=0.6)
@@ -220,6 +232,54 @@ def test_empty_labels_raise(metric) -> None:  # type: ignore[no-untyped-def]
 def test_invalid_grade_raises(grade: int) -> None:
     with pytest.raises(ValueError, match="grade must be 1 or 2"):
         ndcg_at_k(HITS, {("a", "s1"): grade}, k=5, threshold=0.6)
+
+
+# precision_at_k / recall_ceiling_at_k -------------------------------------------------
+
+
+def test_precision_counts_chunks_in_labelled_sections() -> None:
+    # Top 5 chunks above 0.6: a:s1, a:s1, b:s2, a:s3, c:s4. Labelled: s1 twice, s3.
+    assert precision_at_k(HITS, LABELS, k=5, threshold=0.6) == pytest.approx(3 / 5)
+    # k = 2: both chunks are in s1.
+    assert precision_at_k(HITS, LABELS, k=2, threshold=0.6) == 1.0
+
+
+def test_precision_divides_by_returned_chunks_not_k() -> None:
+    # Threshold 0.8 keeps 3 chunks (a:s1, a:s1, b:s2): 2 of 3 labelled.
+    assert precision_at_k(HITS, LABELS, k=5, threshold=0.8) == pytest.approx(2 / 3)
+
+
+def test_precision_is_zero_when_nothing_is_returned() -> None:
+    assert precision_at_k(HITS, LABELS, k=5, threshold=0.99) == 0.0
+    assert precision_at_k(HITS, LABELS, k=0, threshold=0.0) == 0.0
+    assert precision_at_k([], LABELS, k=5, threshold=0.6) == 0.0
+
+
+def test_recall_ceiling_equals_recall_when_labels_fit_in_k() -> None:
+    # 3 labels, k = 5: min(k, |R|) = |R|, so the two agree.
+    assert recall_ceiling_at_k(HITS, LABELS, k=5, threshold=0.6) == pytest.approx(
+        recall_at_k(HITS, LABELS, k=5, threshold=0.6)
+    )
+
+
+def test_recall_ceiling_divides_by_what_k_slots_allow() -> None:
+    labels: Labels = {("a", "s1"): 2, ("a", "s3"): 1} | {
+        (f"p{i}", "x"): 1 for i in range(5)
+    }  # 7 labels, 2 of them found in the top 5
+    assert recall_at_k(HITS, labels, k=5, threshold=0.6) == pytest.approx(2 / 7)
+    assert recall_ceiling_at_k(HITS, labels, k=5, threshold=0.6) == pytest.approx(2 / 5)
+
+
+def test_recall_ceiling_is_one_when_k_slots_are_all_labelled() -> None:
+    hits = [hit("a", f"s{i}", 0.9 - i * 0.01) for i in range(5)]
+    labels: Labels = {("a", f"s{i}"): 1 for i in range(7)}
+    assert recall_at_k(hits, labels, k=5, threshold=0.0) == pytest.approx(5 / 7)
+    assert recall_ceiling_at_k(hits, labels, k=5, threshold=0.0) == 1.0
+
+
+def test_recall_ceiling_is_zero_for_k_zero_and_no_hits() -> None:
+    assert recall_ceiling_at_k(HITS, LABELS, k=0, threshold=0.0) == 0.0
+    assert recall_ceiling_at_k([], LABELS, k=5, threshold=0.6) == 0.0
 
 
 # is_empty / distinct_papers / table_hit ----------------------------------------------

@@ -235,6 +235,11 @@ def _is_up_to_date(
     )
 
 
+def _has_sync_tag(version: Any) -> bool:
+    """True when the dataset version carries a tag other than the built-in `latest`."""
+    return any(tag != LATEST_VERSION_TAG for tag in (version.tags or []))
+
+
 def sync_golden(
     client: LangSmithClient,
     entries: Sequence[GoldenEntry],
@@ -244,6 +249,9 @@ def sync_golden(
     dataset_name: str = DATASET_NAME,
 ) -> SyncResult:
     """Sync `entries` to the LangSmith dataset; no writes when already up to date.
+
+    If the examples are current but the newest version has no git-hash tag (a sync
+    interrupted before tagging), only the tag is written.
 
     The caller has validated the entries and checked the file is committed.
     """
@@ -260,8 +268,22 @@ def sync_golden(
             str(ex.id): ex for ex in client.list_examples(dataset_name=dataset_name)
         }
         if _is_up_to_date(existing, wanted, sha256):
+            latest = client.read_dataset_version(
+                dataset_name=dataset_name, tag=LATEST_VERSION_TAG
+            )
+            if _has_sync_tag(latest):
+                return SyncResult(
+                    dataset_name=dataset_name, golden_sha256=sha256, unchanged=True
+                )
+            # An earlier sync wrote the examples but died before tagging: repair it.
+            client.update_dataset_tag(
+                dataset_name=dataset_name, as_of=latest.as_of, tag=git_hash
+            )
             return SyncResult(
-                dataset_name=dataset_name, golden_sha256=sha256, unchanged=True
+                dataset_name=dataset_name,
+                golden_sha256=sha256,
+                unchanged=False,
+                tag=git_hash,
             )
     else:
         client.create_dataset(dataset_name, description=DATASET_DESCRIPTION)

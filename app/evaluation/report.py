@@ -75,6 +75,11 @@ def render_run_summary(summary: RunSummary) -> str:
         ),
         "## By k (on-corpus questions)",
         "",
+        "Precision is the share of the top-k chunks that sit in a labelled section "
+        "(how much of the context is on target). Recall vs ceiling is recall divided "
+        "by the best the k slots allow, min(k, number of labels); 1.00 means as many "
+        "labelled sections as k slots can hold. Both are reported, not used by the "
+        "decision rule. "
         "Crowding is the mean number of distinct papers in the top-k chunks. "
         "Table hit rate is the share of `table` questions with a table chunk in a "
         "labelled section in the top-k. Evidence tokens are the mean token estimate of "
@@ -87,6 +92,8 @@ def render_run_summary(summary: RunSummary) -> str:
                 "Recall",
                 "nDCG",
                 "MRR",
+                "Precision",
+                "Recall vs ceiling",
                 "Crowding",
                 "Table hit rate",
                 "Evidence tokens",
@@ -97,6 +104,8 @@ def render_run_summary(summary: RunSummary) -> str:
                     _num(row.recall),
                     _num(row.ndcg),
                     _num(row.mrr),
+                    _num(row.precision),
+                    _num(row.recall_ceiling),
                     _num(row.crowding, 2),
                     _num(row.table_hit_rate),
                     _num(row.evidence_tokens, 0),
@@ -117,6 +126,8 @@ def render_run_summary(summary: RunSummary) -> str:
                 "Recall@5",
                 "nDCG@5",
                 "MRR@5",
+                "Precision@5",
+                "Recall@5 vs ceiling",
                 "Empty rate",
                 "Mean overlap",
                 "Max overlap",
@@ -128,6 +139,8 @@ def render_run_summary(summary: RunSummary) -> str:
                     _num(row.recall),
                     _num(row.ndcg),
                     _num(row.mrr),
+                    _num(row.precision),
+                    _num(row.recall_ceiling),
                     _num(row.empty_rate, 2),
                     _num(row.mean_overlap, 1),
                     NOT_AVAILABLE if row.max_overlap is None else str(row.max_overlap),

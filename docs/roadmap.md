@@ -77,6 +77,17 @@ human-verified, with only 5 off-corpus questions.
   empties 31 % of on-corpus ones. A better refusal signal than a score cut-off (a
   reranker score, a margin between top hits, an LLM check) is a candidate. More than 5
   off-corpus golden questions would be needed to judge it.
+  Options, cheapest first (owner's recommendation from the Phase 9 review, not decided):
+  1. Margin or relative rule: refuse when the top score is not clearly above the rest.
+     Cheap, but tuning on 5 off-corpus questions is weak evidence.
+  2. LLM relevance check after retrieval: one extra call, and a 0.6B model is a weak judge.
+  3. Reranker score as the signal (Phase 10): a cross-encoder separates on-topic from
+     off-topic better than embedding similarity. Recommended first choice.
+  4. Grounding rule in the generation prompt ("the papers do not cover this"): cheap
+     safety net, to be checked in Phase 11.
+  5. Show low confidence in the UI instead of refusing.
+  Why a cut-off fails: the whole corpus is medical AI, so off-corpus questions stay close in
+  topic to some chunk. Embedding similarity measures topic closeness, not whether the answer is present.
 - **Rewriter quality.** 6 of 50 cached rewrites start with the literal text
   `Rewritten question:` (the prompt ends with that phrase and `rewrite_node` does not
   strip it), and 13 of 50 equal the question. The 0.6B rewriter showed no measured
@@ -90,6 +101,27 @@ human-verified, with only 5 off-corpus questions.
 - **`top_k`:** k = 10 lifts Recall from 0.509 to 0.687 at about twice the evidence
   tokens, above the 4000-token evidence budget of `generate_node`. Its effect on
   answers belongs to Phase 11.
+
+### Phase 9 diagnosis follow-ups (decide later)
+
+Source: [`3-execute-diagnosis.md`](phases/09-retrieval-evaluation/3-execute-diagnosis.md),
+part 8. Same caveat: LLM-labelled golden set, 45 on-corpus questions. Not decisions.
+
+What the checks showed: crowding is minor (a cap of 1 chunk per section gives about +0.03
+nDCG@5, caps of 2 or 3 give nothing), a second reader found 0 answers in 24 unlabelled
+"right paper, wrong section" hits, and Recall@20 (0.82) is far above Recall@5 (0.53). The
+main loss is ranking. Pick these up in the stage shown:
+
+| # | Follow-up | Pick up in | Trigger or condition |
+|---|---|---|---|
+| 1 | Reranker (retrieve 20, rerank, keep 5), judged with the Phase 9 runs and bootstrap rule | Phase 10 Discuss | First candidate. Targets the 0.82 to 0.53 gap, and doubles as the off-corpus refusal signal (option 3 above) |
+| 2 | Chunk-size experiment: token budget 256, `merge_peers` on and off, new collection `eval_chunk256`, bootstrap against baseline | Phase 10 Discuss (after the reranker is measured) | Only if a reranker leaves a large "right paper, wrong section" share. Decision rule applies because it may change a default |
+| 3 | Cap of chunks per section in `retrieve_node` (cap 1 or 2) | Phase 11 | Our metrics cannot see its cost (a needed second chunk of a section). Adopt only if the generation eval shows no drop in answer quality |
+| 4 | Biomedical embedder (MedCPT, PubMedBERT; see Open questions) | Phase 10 Discuss, after 1 and 2 | `bge_base` was not clearly better and wrong-paper hits are about 20 %, so low priority |
+| 5 | Automatic pooling with an LLM judge (recurring job behind `LlmProvider`, human calibration on about 50 pairs) | Phase 11 | Only if a later second-reader pass finds many missing labels. The first pass found 0 of 24 |
+| 6 | Larger second-reader sample, with a non-Claude reader or a human, and ranks 6 to 20 included | Phase 11 (with the judge calibration) | The first pass used Claude, so it is not independent. The calibration step needs a human anyway |
+| 7 | ~~Rebuild the live `papers` collection~~ Done: the live `papers` collection holds 595 chunks and the eval preflight passes (checked in the Phase 9 verify) | - | - |
+| 8 | Fix the rewriter `Rewritten question:` leak and re-run the four evals | Before Phase 10 Execute | See the rewriter bullet above |
 
 ### Exit criteria (every phase)
 

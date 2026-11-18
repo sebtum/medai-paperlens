@@ -12,6 +12,7 @@ Every command returns the lines to print; the script prints them.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,6 +76,11 @@ def render_sections(index: CorpusIndex, *, paper: str | None = None) -> str:
     return "\n".join(lines)
 
 
+# A paper id becomes a file name, so it may only be a plain name: no separators,
+# no `..`, no drive or absolute path.
+_SAFE_PAPER_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
 def _require_outside_repo(directory: Path) -> Path:
     resolved = directory.resolve()
     if resolved == REPO_ROOT or resolved.is_relative_to(REPO_ROOT):
@@ -112,6 +118,12 @@ async def dump_chunk_text(
                 and isinstance(index, int)
                 and (paper is None or paper_id == paper)
             ):
+                if not _SAFE_PAPER_ID.fullmatch(paper_id):
+                    raise RunError(
+                        f"refusing to dump: paper_id {paper_id!r} in collection "
+                        f"{collection!r} is not a plain name (letters, digits, '_' "
+                        "and '-' only), so it cannot be used as a file name."
+                    )
                 chunks.setdefault(paper_id, []).append((index, payload))
         if offset is None:
             break
@@ -130,7 +142,9 @@ async def dump_chunk_text(
                 f"{payload.get('section', '')} | {where} ===\n"
                 f"{payload.get('text', '')}\n"
             )
-        path = target / f"{paper_id}.txt"
+        path = (target / f"{paper_id}.txt").resolve()
+        if path.parent != target:  # defence in depth; the name check should prevent it
+            raise RunError(f"refusing to write {path}: outside {target}")
         path.write_text("\n".join(parts), encoding="utf-8")
         written.append(path)
     return written
