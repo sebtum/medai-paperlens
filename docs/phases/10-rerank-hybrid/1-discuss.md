@@ -1,6 +1,6 @@
 # Phase 10: Rerank and hybrid search — Discuss
 
-**Status:** decisions taken with the owner on 2026-11-18, one by one. Waiting for sign-off. Every number below comes from the Phase 9 golden set, which is LLM-labelled (written by Claude), not human-verified.
+**Status:** decisions taken with the owner on 2026-11-18, one by one. Signed off 2026-11-18. Plan changed decision 4: the refusal cut-off is chosen after the results are seen (see `2-plan.md`). Every number below comes from the Phase 9 golden set, which is LLM-labelled (written by Claude), not human-verified.
 
 ## Goal
 
