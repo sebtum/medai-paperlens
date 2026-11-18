@@ -90,15 +90,15 @@ The eval runner can rerank, time the reranker, and report the "right paper, wron
   - [x] The LangSmith experiment threshold follows `score_kind`. Tests use fakes only. The `NAMED_CONFIGS` test is updated.
 - Note: Done 2026-11-18. `--depth`, `--rerank-query` and `--reranker` require `--name` (read as the run name, so a variant never overwrites a config file). `fetch_chunk_payloads` lives in `target.py` (circular import otherwise). Report: `3-execute-T5.md`.
 
-### [ ] T6: Reranker runs, labelling pass, freeze v2
+### [x] T6: Reranker runs, labelling pass, freeze v2
 Run all reranker setups, label the hits they lift into the top 5 the same way as in Phase 9, and freeze golden set v2.
 - Files: `data/eval/runs/*.json`, `reports/*.md`, `golden.jsonl`, `adjudicated.jsonl`, `CHANGELOG.md`
 - Depends on: T4, T5 · Group: G4
 - Acceptance criteria:
-  - [ ] 9 reranked runs: 3 models × (rewritten at depth 20, original at depth 20, rewritten at depth 40). The four dense configs are re-run on the v2 draft.
-  - [ ] Pool over the union of the reranked runs' top 5 (`--k 5 --threshold 0`). Every candidate is read. Additions and rejections are logged.
-  - [ ] v2 frozen. All runs re-run on v2 (`--no-llm`). Dataset re-synced to LangSmith if a key is present, else noted.
-- Note:
+  - [x] 9 reranked runs: 3 models × (rewritten at depth 20, original at depth 20, rewritten at depth 40). The four dense configs are re-run on the v2 draft.
+  - [x] Pool over the union of the reranked runs' top 5 (`--k 5 --threshold 0`). Every candidate is read. Additions and rejections are logged.
+  - [x] v2 frozen. All runs re-run on v2 (`--no-llm`). Dataset re-synced to LangSmith if a key is present, else noted.
+- Note: Done 2026-11-18. 13 runs on frozen v2 (65 questions, 159 labels, hash cc08395a...). 241 candidates read, 9 labels added, 232 rejected. Open for owner: q044 label blocked by a banned heading, q037 label is chunk-based, q064 judged off-corpus. Report: `3-execute-T6.md`.
 
 ### [ ] T7: Comparisons and owner review → reranker ADR
 Compare each reranker with today's default. Then Execute stops so the owner can see times and scores and decide.

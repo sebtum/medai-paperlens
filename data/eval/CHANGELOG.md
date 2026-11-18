@@ -63,9 +63,9 @@ This changes the stored rewrites in `rewrites.jsonl`, not the golden set. No que
 
 Exactly 6 rewrite texts changed (q009, q015, q029, q031, q035, q042). Runs saved before this change (Phase 9) used the old rewrites for these 6 questions.
 
-## v2 (draft, 2026-11-18): Phase 10, 15 near-miss questions
+## v2 (frozen, 2026-11-18): Phase 10, 15 near-miss questions and reranker pooling
 
-**Status: draft.** Task T6 freezes v2. Until then the golden set can still change. Golden set LLM-labelled (Claude), not human-verified.
+**Status: frozen (task T6, 2026-11-18).** Draft hash `af6ce07a...64af` (65 questions, 150 labels) became final hash `cc08395a87ca30fc302b98065395f77404f192d3999f22428cab009b38022b0c` after the labelling pass below. All 13 runs of Phase 10 carry the final hash. Golden set LLM-labelled (Claude), not human-verified.
 
 v2 adds 15 off-corpus questions, q051 to q065. No question text, id, type, label or `source_chunks` entry of q001 to q050 changed (the first 50 lines of `golden.jsonl` and of `rewrites.jsonl` are byte-identical to v1).
 
@@ -92,3 +92,42 @@ v2 adds 15 off-corpus questions, q051 to q065. No question text, id, type, label
 | New rewrites from Ollama (`qwen3:0.6b`) | 15 (q051 to q065), none starts with "Rewritten question:" |
 
 Golden set LLM-labelled (Claude), not human-verified. The same author wrote these questions and judged the retrieved sections, so the "no answer in the corpus" judgement is not independent.
+
+### Reranker pooling pass (2026-11-18, task T6)
+
+The nine reranked runs put some sections into the top 5 that no dense run showed. An author can miss a section that answers a question, so these sections were read before v2 was frozen. No question text, id, type or `source_chunks` entry changed. No label was removed or re-graded.
+
+**Method.** The pool is the union of the top 5 chunks (threshold 0, no cut) of nine runs: `rerank_minilm`, `rerank_bge`, `rerank_medcpt`, each rewritten at depth 20, original question at depth 20 (`_orig`) and rewritten at depth 40 (`_d40`). Command: `python -m scripts.eval_retrieval pool <the nine runs> --k 5 --threshold 0`. The chunk text of every candidate was read from the `papers` collection and judged by the Phase 9 standard (grade 2 fully answers, grade 1 part of the answer or clear support, a section on the same topic only is not added). Candidates were judged by their text, not by the reranker score or rank. The labeller is the same author who wrote the questions, so this is not a blind pass in the human sense.
+
+| Item | Value |
+|---|---|
+| Questions pooled | 45 on-corpus (off-corpus skipped by the pool command, checked separately below) |
+| Candidate sections read | 241 |
+| Added at grade 2 | 0 |
+| Added at grade 1 | 9 |
+| Rejected | 232 (all recorded with a reason in `data/eval/adjudicated.jsonl`) |
+| Total labels after | 159 (84 at grade 2, 75 at grade 1), was 150 |
+
+Candidates by reranker (a candidate counts for a reranker if any of its three runs had it in the top 5): `minilm` 127 candidates and 5 additions, `bge` 140 and 5, `medcpt` 140 and 6. 25, 41 and 56 candidates were seen by only that one reranker. By question type, the additions went to cross_paper (3) and multi_section (6). Factual, paraphrased and table questions got no addition (62, 55 and 39 candidates).
+
+**Off-corpus questions (q046 to q065).** The top-5 sections of the nine runs were checked for all 20 (196 candidate sections) with a key-term search of each chunk and a read of every hit. No section answers any of them. The closest is q064 (retrieval-augmented generation against hallucination): MAIRA-2 sections report that prior studies and the lateral view reduce hallucinated comparisons and lateral mentions. That is extra input, not retrieval-augmented generation, so the question stays off-corpus (same call as in the v2 draft). Nothing changed for any off-corpus question.
+
+**Additions.**
+
+| Question | Type | Paper | Section | Grade | Reason |
+|---|---|---|---|---|---|
+| q022 | cross_paper | maira_2 | Introduction | 1 | States that MAIRA-2 takes the lateral view, prior frontal image, prior report, Indication, Technique and Comparison sections as inputs. Same support as the labelled Methods > Data. |
+| q022 | cross_paper | med_palm_m | Appendix > Chest X-ray report generation | 1 | Prompt examples give the view ('Given the LATERAL view X-ray image') and the 'Reason for the study' next to the image. |
+| q028 | cross_paper | maira_2 | Discussion | 1 | One sentence names the image encoder (Rad-DINO-MAIRA-2) and the language model (Vicuna 7B v1.5). Same facts as the labelled architecture section. |
+| q037 | multi_section | conch | Results > Zero-shot cross-modal retrieval | 1 | One sentence states the segmentation method: divide each WSI into tiles and zero-shot classify each tile. The section label is about retrieval, the chunk holds this sentence. |
+| q037 | multi_section | conch | Online Methods > Supervised classification experiments | 1 | Describes tile embeddings from the image encoder and an attention-pooled slide-level representation for slide classification (supervised variant only). |
+| q039 | multi_section | med_palm_m | Appendix > MultiMedBench | 1 | Lists which datasets and splits enter the training mixture (for example PubMedQA is evaluation only) and holds the mixture-ratio figure caption. Does not say how the ratios were chosen. |
+| q041 | multi_section | deep_tumor_vqa | Discussion and Conclusion | 1 | One sentence states that structured metadata and QA pairs are generated from organ and lesion segmentation masks. Does not define the question types. |
+| q042 | multi_section | intersectional_fairness_vlm | Discussion | 1 | States how subgroups were defined (age bins, binary gender, binarised race) and why: data availability and minimum subgroup sample size. |
+| q042 | multi_section | intersectional_fairness_vlm | Methods > Experimental Design and Baseline Comparisons | 1 | States that models were trained on HAM10000 and tested on the held-out HAM10000 test set (internal) and on BCN20000 (external). No split sizes. |
+
+**Notable rejections.** A section that was read and could be argued either way: llava_med `Experiments > Visual input example, Biomedical image from [6]` for q044 holds the data-size and two-stage ablation result, but its heading is a banned odd Phase 8 label, so it cannot be labelled. Others with a reason in `adjudicated.jsonl`: radfm `Discussion > Clinical impact` for q020 (same call as Phase 9), med_palm_m `Appendix > Detailed Med-PaLM M Performance` for q035 (says joint training helps, gives no result for dropping classification), pathalign `Supplementary figures` for q018 (captions of the case and slide hierarchy), radfm `Evaluation > Evaluation on Public Benchmarks` for q026 (dataset descriptions, no results). The rejection counts per question are the rows of `adjudicated.jsonl`.
+
+**Freeze.** `validate_golden` passes. Hash after: `cc08395a87ca30fc302b98065395f77404f192d3999f22428cab009b38022b0c` (v2 draft was `af6ce07a...64af`). The 13 runs were re-run on this file with `--no-llm` so every run record carries it. The LangSmith dataset sync is not part of T6 (the orchestrator handles it, it needs a committed file).
+
+Golden set LLM-labelled (Claude), not human-verified. The same author wrote the questions and judged the retrieved sections, and a different or second reader would likely add or reject some of these.
