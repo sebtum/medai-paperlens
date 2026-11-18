@@ -62,3 +62,33 @@ This changes the stored rewrites in `rewrites.jsonl`, not the golden set. No que
 | q042 | Rewritten question: Which datasets were selected for the intersectional fairness study, why were other datasets excluded, and how were the cohorts split into subgroups and train, validation, and test sets? | Which datasets were selected for the intersectional fairness study, why were other datasets excluded, and how were the cohorts split into subgroups and train, validation, and test sets? |
 
 Exactly 6 rewrite texts changed (q009, q015, q029, q031, q035, q042). Runs saved before this change (Phase 9) used the old rewrites for these 6 questions.
+
+## v2 (draft, 2026-11-18): Phase 10, 15 near-miss questions
+
+**Status: draft.** Task T6 freezes v2. Until then the golden set can still change. Golden set LLM-labelled (Claude), not human-verified.
+
+v2 adds 15 off-corpus questions, q051 to q065. No question text, id, type, label or `source_chunks` entry of q001 to q050 changed (the first 50 lines of `golden.jsonl` and of `rewrites.jsonl` are byte-identical to v1).
+
+**Golden hash change.** The golden file hash changes from `4a4733e5fa7623f324adf0c7704ae9ec49326366a66f9a74071b746c90a52649` (v1, 50 questions) to `af6ce07add4ad753e9d202adfe107718958bede10c7c51b296e81bb1837264af` (v2 draft, 65 questions). Runs saved before this change carry the v1 hash.
+
+**Quotas.** `off_corpus` 5 to 20, total 50 to 65. `QUOTAS` in `app/evaluation/golden.py` and the two golden tests were updated.
+
+**What the new questions are.** Medical-AI questions that look like they belong to the 10 papers but are not answered by them. They are written before any reranker result exists, and they were not tuned to the dense scores. Kinds of near miss:
+
+| Kind | Questions |
+|---|---|
+| Same modality, different task | q053 (survival from slides), q055 (brain tumour segmentation), q056 (segmentation with LLaVA-Med), q057 (MRI tumour grading), q063 (molecular biomarkers from slides) |
+| Model the corpus does not cover | q051 (GPT-4V on retinal photos), q054 (MedGemma), q063 (UNI, Virchow) |
+| Dataset or setting the corpus does not use | q052 (echocardiography video), q062 (cardiac MRI), q065 (colonoscopy video), q061 (low-resource languages) |
+| Topic next to a covered paper | q058 (Stable Diffusion on skin photos), q059 (bias in generated reports), q060 (eye tracking for slides), q064 (retrieval-augmented generation against hallucination) |
+
+**Corpus check.** For each question, the dense top-10 sections (from a scratch run with the baseline setup and real Ollama rewrites) were listed with `pool --include-off-corpus`, and the chunk text was read from the `papers` collection (every chunk that contained a key term, plus the section list of all 150 hits). No section answers any of the 15. Dropped: 0. Rewritten: 0.
+
+| Item | Value |
+|---|---|
+| Questions written | 15 |
+| Dropped or rewritten after the check | 0 |
+| Flagged by the safety filter (`classify_node`) | 0 |
+| New rewrites from Ollama (`qwen3:0.6b`) | 15 (q051 to q065), none starts with "Rewritten question:" |
+
+Golden set LLM-labelled (Claude), not human-verified. The same author wrote these questions and judged the retrieved sections, so the "no answer in the corpus" judgement is not independent.

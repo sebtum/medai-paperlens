@@ -64,17 +64,17 @@ A small reranker interface plus a sentence-transformers version, built like the 
   - Details: MiniLM may now be `cross-encoder/ms-marco-MiniLM-L6-v2` (renamed, old ID redirects). `max_length=512` for all three.
 - Note: Done 2026-11-18. All three model IDs load and score (MiniLM `cross-encoder/ms-marco-MiniLM-L-6-v2` rev 233902d, `BAAI/bge-reranker-base` rev 2cfc18c, `ncbi/MedCPT-Cross-Encoder` rev 71caf65). Explicit sigmoid needed for MiniLM only. Report: `3-execute-T3.md`.
 
-### [ ] T4: Golden set v2: 15 near-miss questions
+### [x] T4: Golden set v2: 15 near-miss questions
 Claude writes 15 more off-topic questions that are medical AI but not covered by the 10 papers. They are written before any reranker result is seen.
 - Files: `data/eval/golden.jsonl`, `app/evaluation/golden.py` (`QUOTAS`), `tests/test_golden_set.py`, `tests/test_eval_golden.py`, `data/eval/rewrites.jsonl`, `data/eval/CHANGELOG.md`
 - Depends on: T2 · Group: G3
 - Acceptance criteria:
-  - [ ] Entries `q051`–`q065`, type `off_corpus`. Quota 5 → 20, total 50 → 65. Tests updated.
-  - [ ] Each checked against the corpus: the dense top-10 sections (`pool --include-off-corpus`) are read and contain no answer. Dropped or rewritten questions are counted in Note.
-  - [ ] None is flagged by the safety filter. The 15 new rewrites come from Ollama.
-  - [ ] Logged in `CHANGELOG.md` as v2 (draft until T6 freezes it).
+  - [x] Entries `q051`–`q065`, type `off_corpus`. Quota 5 → 20, total 50 → 65. Tests updated.
+  - [x] Each checked against the corpus: the dense top-10 sections (`pool --include-off-corpus`) are read and contain no answer. Dropped or rewritten questions are counted in Note.
+  - [x] None is flagged by the safety filter. The 15 new rewrites come from Ollama.
+  - [x] Logged in `CHANGELOG.md` as v2 (draft until T6 freezes it).
   - Details: example: "How does GPT-4 perform on dermatology images?" Mix of near misses: same modality but a different task, a model the corpus doesn't cover, a dataset the corpus doesn't use.
-- Note:
+- Note: Done 2026-11-18. 15 questions q051-q065, 0 dropped, 0 rewritten; 0 of 65 flagged by the safety filter; 15 new rewrites from Ollama, first 50 lines of both files byte-identical. v2 is a draft (hash af6ce07a...), T6 freezes it. Report: `3-execute-T4.md`.
 
 ### [x] T5: Eval support for reranking
 The eval runner can rerank, time the reranker, and report the "right paper, wrong section" share.

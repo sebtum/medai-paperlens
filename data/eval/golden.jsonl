@@ -48,3 +48,18 @@
 {"id": "q048", "question": "How vulnerable are medical vision-language models to adversarial image perturbations or prompt-injection attacks, and which defences have been proposed?", "type": "off_corpus", "relevant": [], "source_chunks": []}
 {"id": "q049", "question": "How much do post-training quantisation or pruning cut the memory use and inference latency of medical multimodal models on hospital hardware?", "type": "off_corpus", "relevant": [], "source_chunks": []}
 {"id": "q050", "question": "What health-economic analyses show the cost-effectiveness of deploying AI triage for chest radiographs in hospitals?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q051", "question": "How well does GPT-4V detect diabetic retinopathy in retinal fundus photographs?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q052", "question": "Which vision-language models have been tested on echocardiography ultrasound videos?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q053", "question": "How accurate are foundation models at predicting patient survival from H&E whole slide images?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q054", "question": "What results does MedGemma get on chest X-ray report generation?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q055", "question": "How do medical vision-language models perform on the BraTS brain tumour segmentation benchmark?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q056", "question": "Can LLaVA-Med be used for medical image segmentation, for example to outline lesions?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q057", "question": "RadFM results on MRI brain tumour grading", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q058", "question": "Is there any evidence that fine-tuning Stable Diffusion on skin lesion photographs gives realistic dermatology images, and how would a team check that the generated images are not copies of real patients' photos?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q059", "question": "Are there studies on demographic bias, for example by patient race or age, in automatically generated radiology reports?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q060", "question": "Can eye-tracking data from pathologists improve whole slide image classification?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q061", "question": "How well do medical vision-language models handle low-resource languages such as Swahili or Hindi in radiology question answering?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q062", "question": "Is there a benchmark for visual question answering on cardiac MRI cine sequences?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q063", "question": "How well do pathology foundation models such as UNI or Virchow predict molecular biomarkers like microsatellite instability from slides?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q064", "question": "Does retrieval-augmented generation reduce hallucinations in automatically generated radiology reports?", "type": "off_corpus", "relevant": [], "source_chunks": []}
+{"id": "q065", "question": "VLMs for polyp detection in colonoscopy videos", "type": "off_corpus", "relevant": [], "source_chunks": []}

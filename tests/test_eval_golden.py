@@ -79,7 +79,7 @@ def replace(entries: list[GoldenEntry], index: int, **update: Any) -> list[Golde
 
 def test_valid_set_has_no_violations() -> None:
     entries = make_valid_entries()
-    assert len(entries) == 50
+    assert len(entries) == 65
     assert validate_golden(entries, MANIFESTS) == []
 
 
@@ -108,7 +108,7 @@ def test_quota_missing_entry() -> None:
     entries = make_valid_entries()
     entries.pop(first_of(entries, QuestionType.OFF_CORPUS))
     violations = validate_golden(entries, MANIFESTS)
-    assert "quota off_corpus: expected 5, found 4" in violations
+    assert "quota off_corpus: expected 20, found 19" in violations
 
 
 def test_quota_extra_entry() -> None:
