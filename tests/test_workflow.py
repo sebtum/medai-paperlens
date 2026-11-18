@@ -316,11 +316,12 @@ def _ranked_citation(n: int) -> Citation:
 
 
 def _ranked_state(count: int, **overrides) -> WorkflowState:
-    return _safe_state(
-        rewritten="rewritten question",
-        citations=[_ranked_citation(n) for n in range(1, count + 1)],
+    fields = {
+        "rewritten": "rewritten question",
+        "citations": [_ranked_citation(n) for n in range(1, count + 1)],
         **overrides,
-    )
+    }
+    return _safe_state(**fields)
 
 
 async def test_retrieve_fetches_the_retrieve_depth() -> None:
@@ -356,12 +357,8 @@ async def test_rerank_node_sends_rewritten_query_and_shared_passage_text() -> No
     ((query, passages),) = reranker.calls
     assert query == "rewritten question"
     assert passages == [
-        "Paper 1
-Section 1
-Excerpt 1.",
-        "Paper 2
-Section 2
-Excerpt 2.",
+        "Paper 1\nSection 1\nExcerpt 1.",
+        "Paper 2\nSection 2\nExcerpt 2.",
     ]
 
 

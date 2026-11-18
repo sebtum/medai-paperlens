@@ -31,7 +31,8 @@ from app.evaluation.target import (
     source_overlap,
 )
 from app.retrieval.ingestion import point_id
-from tests.conftest import FakeLlm
+from app.retrieval.rerank import rerank_passage
+from tests.conftest import FakeLlm, FakeReranker
 
 MODEL = "BAAI/bge-small-en-v1.5"
 COLLECTION = "papers"
@@ -707,3 +708,244 @@ class TestLongestSharedNgram:
             question="beta gamma", source_chunks=["maira_2:0", "maira_2:99"]
         )
         assert await source_overlap(entry, corpus, COLLECTION) == 2  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Reranked retrieval (Phase 10)
+# ---------------------------------------------------------------------------
+
+
+def titled_point(title: str, *args: Any, **kwargs: Any) -> SimpleNamespace:
+    point = make_point(*args, **kwargs)
+    point.payload["title"] = title
+    return point
+
+
+@pytest.fixture
+def rerank_corpus() -> FakeAsyncQdrant:
+    """Four chunks: three above the 0.6 pre-filter and one (0.5) below it."""
+    return FakeAsyncQdrant(
+        [
+            titled_point("Paper A", "pa", "Intro", 0, text="text a", score=0.9),
+            titled_point("Paper A", "pa", "Methods", 1, text="text b", score=0.8),
+            titled_point("Paper B", "pb", "Results", 0, text="text c", score=0.7),
+            titled_point("Paper B", "pb", "Appendix", 1, text="text d", score=0.5),
+        ]
+    )
+
+
+def rerank_config(**overrides: Any) -> RetrievalConfig:
+    return make_config(reranker="some/reranker", **overrides)
+
+
+class TestRerankConfig:
+    def test_defaults_are_dense_only(self) -> None:
+        config = make_config()
+        assert config.reranker is None
+        assert config.rerank_query == "rewritten"
+        assert config.prefilter_threshold == 0.6
+        assert config.score_kind == "cosine"
+
+    def test_a_reranker_makes_the_scores_rerank_scores(self) -> None:
+        assert rerank_config().score_kind == "rerank"
+
+    def test_rerank_query_must_be_known(self) -> None:
+        with pytest.raises(ValueError, match="rerank_query"):
+            make_config(rerank_query="both")
+
+    def test_prefilter_must_be_a_cosine_value(self) -> None:
+        with pytest.raises(ValueError, match="prefilter_threshold"):
+            make_config(prefilter_threshold=1.5)
+
+    def test_blank_reranker_name_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="reranker"):
+            make_config(reranker=" ")
+
+
+class TestRerankedRetrieval:
+    async def test_prefilters_reranks_and_sorts_by_the_reranker_score(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        reranker = FakeReranker(scores=[0.1, 0.95, 0.4])
+        result = await retrieve_ranked(
+            make_entry(),
+            rerank_config(),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=reranker,
+        )
+
+        # The 0.5 chunk never reaches the reranker; the other three are re-scored.
+        assert len(reranker.calls[0][1]) == 3
+        assert [(h.section, h.score) for h in result.hits] == [
+            ("Methods", 0.95),
+            ("Results", 0.4),
+            ("Intro", 0.1),
+        ]
+        # The search itself still ran at threshold 0 with the full depth.
+        assert rerank_corpus.query_calls[0]["score_threshold"] == 0.0
+        assert rerank_corpus.query_calls[0]["limit"] == 20
+
+    async def test_the_reranker_reads_title_section_and_text(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        reranker = FakeReranker(scores=[0.5, 0.5, 0.5])
+        await retrieve_ranked(
+            make_entry(),
+            rerank_config(),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=reranker,
+        )
+        # Dense order, the exact text the app builds with the same function.
+        assert reranker.calls[0][1] == [
+            rerank_passage("Paper A", "Intro", "text a"),
+            rerank_passage("Paper A", "Methods", "text b"),
+            rerank_passage("Paper B", "Results", "text c"),
+        ]
+
+    async def test_ties_keep_the_dense_order(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        result = await retrieve_ranked(
+            make_entry(),
+            rerank_config(),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=FakeReranker(scores=[0.3, 0.3, 0.3]),
+        )
+        assert [h.section for h in result.hits] == ["Intro", "Methods", "Results"]
+
+    async def test_the_prefilter_threshold_is_configurable(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        reranker = FakeReranker(scores=[0.2, 0.2, 0.2, 0.2])
+        result = await retrieve_ranked(
+            make_entry(),
+            rerank_config(prefilter_threshold=0.0),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=reranker,
+        )
+        assert len(result.hits) == 4
+
+    async def test_returns_the_time_taken(self, rerank_corpus: FakeAsyncQdrant) -> None:
+        result = await retrieve_ranked(
+            make_entry(),
+            rerank_config(),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=FakeReranker(scores=[0.1, 0.2, 0.3]),
+        )
+        assert result.rerank_ms is not None
+        assert result.rerank_ms >= 0.0
+
+    async def test_rewritten_query_is_the_default_reranker_text(
+        self, rerank_corpus: FakeAsyncQdrant, tmp_path: Path
+    ) -> None:
+        entry = make_entry()
+        cache = RewriteCache(tmp_path / "rewrites.jsonl")
+        cache.put(RewriteKey.for_entry(entry, REWRITER), "rewritten text")
+        reranker = FakeReranker(scores=[0.1, 0.2, 0.3])
+        await retrieve_ranked(
+            entry,
+            rerank_config(rewrite=True, rewrite_model=REWRITER),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            cache=cache,
+            reranker=reranker,
+        )
+        assert reranker.calls[0][0] == "rewritten text"
+
+    async def test_original_question_can_be_the_reranker_text(
+        self, rerank_corpus: FakeAsyncQdrant, tmp_path: Path
+    ) -> None:
+        entry = make_entry()
+        cache = RewriteCache(tmp_path / "rewrites.jsonl")
+        cache.put(RewriteKey.for_entry(entry, REWRITER), "rewritten text")
+        embedder = FakeEmbedder()
+        reranker = FakeReranker(scores=[0.1, 0.2, 0.3])
+        result = await retrieve_ranked(
+            entry,
+            rerank_config(
+                rewrite=True, rewrite_model=REWRITER, rerank_query="original"
+            ),
+            embedder=embedder,
+            client=rerank_corpus,  # type: ignore[arg-type]
+            cache=cache,
+            reranker=reranker,
+        )
+        assert reranker.calls[0][0] == entry.question
+        # Only the reranker's text changes; the vector search still used the rewrite.
+        assert embedder.texts == ["rewritten text"]
+        assert result.query == "rewritten text"
+
+    async def test_nothing_left_after_the_prefilter_skips_the_model(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        reranker = FakeReranker(scores=[])
+        result = await retrieve_ranked(
+            make_entry(),
+            rerank_config(prefilter_threshold=0.99),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=reranker,
+        )
+        assert result.hits == []
+        assert result.rerank_ms is None
+        assert reranker.calls == []
+
+    async def test_a_reranker_config_without_a_reranker_raises(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        with pytest.raises(ValueError, match="some/reranker"):
+            await retrieve_ranked(
+                make_entry(),
+                rerank_config(),
+                embedder=FakeEmbedder(),
+                client=rerank_corpus,  # type: ignore[arg-type]
+            )
+
+    async def test_wrong_number_of_scores_raises(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        with pytest.raises(ValueError, match="2 scores for 3 passages"):
+            await retrieve_ranked(
+                make_entry(),
+                rerank_config(),
+                embedder=FakeEmbedder(),
+                client=rerank_corpus,  # type: ignore[arg-type]
+                reranker=FakeReranker(scores=[0.1, 0.2]),
+            )
+
+    async def test_reranker_errors_are_not_swallowed(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        with pytest.raises(RuntimeError, match="model crashed"):
+            await retrieve_ranked(
+                make_entry(),
+                rerank_config(),
+                embedder=FakeEmbedder(),
+                client=rerank_corpus,  # type: ignore[arg-type]
+                reranker=FakeReranker(error=RuntimeError("model crashed")),
+            )
+
+    async def test_dense_runs_are_unchanged_and_untimed(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        reranker = FakeReranker(scores=[0.1])
+        result = await retrieve_ranked(
+            make_entry(),
+            make_config(),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=reranker,  # ignored: the config has no reranker
+        )
+        assert reranker.calls == []
+        assert result.rerank_ms is None
+        assert [(h.section, h.score) for h in result.hits] == [
+            ("Intro", 0.9),
+            ("Methods", 0.8),
+            ("Results", 0.7),
+            ("Appendix", 0.5),
+        ]

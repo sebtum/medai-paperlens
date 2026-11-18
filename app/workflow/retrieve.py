@@ -8,6 +8,9 @@ from app.workflow.state import WorkflowState
 
 logger = logging.getLogger(__name__)
 
+RETRIEVE_DEPTH = 20
+"""Hits fetched from the vector search; the rerank step keeps the best 5."""
+
 
 def make_retrieve_node(client: AsyncQdrantClient, provider: EmbeddingProvider):
     async def retrieve_node(state: WorkflowState) -> dict:
@@ -22,7 +25,7 @@ def make_retrieve_node(client: AsyncQdrantClient, provider: EmbeddingProvider):
             citations, confidence = await search(
                 vector,
                 client,
-                top_k=5,
+                top_k=RETRIEVE_DEPTH,
                 score_threshold=state["score_threshold"],
             )
         except ConnectionError, TimeoutError, OSError:

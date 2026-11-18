@@ -11,6 +11,7 @@ from app.llm.factory import get_llm_provider
 from app.main import app
 from app.retrieval.client import get_async_client
 from app.retrieval.embedding import get_embedding_provider
+from app.retrieval.rerank import get_reranker
 
 
 @pytest.fixture
@@ -27,6 +28,7 @@ async def mocked_app():
     app.dependency_overrides[get_async_client] = lambda: mock_client
     app.dependency_overrides[get_embedding_provider] = lambda: mock_provider
     app.dependency_overrides[get_llm_provider] = lambda: fake_llm
+    app.dependency_overrides[get_reranker] = lambda: None
 
     async with LifespanManager(app) as manager:
         yield manager.app
@@ -79,6 +81,7 @@ async def test_query_citations_include_provenance_and_legacy_payloads() -> None:
     app.dependency_overrides[get_async_client] = lambda: mock_client
     app.dependency_overrides[get_embedding_provider] = lambda: mock_provider
     app.dependency_overrides[get_llm_provider] = lambda: FakeLlm(answer="Answer.")
+    app.dependency_overrides[get_reranker] = lambda: None
 
     try:
         async with (

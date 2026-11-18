@@ -61,6 +61,9 @@ services:
       OLLAMA_BASE_URL: http://ollama:11434
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
       OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
+      # Empty or "none" = reranking off (the step then only keeps the first 5 hits).
+      # The model downloads on first use into the shared huggingface_cache volume.
+      RERANKER_MODEL: ${RERANKER_MODEL:-}
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     depends_on:

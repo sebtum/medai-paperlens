@@ -195,5 +195,5 @@ All five must pass before a PR is mergeable (enforced in CI via GitHub Actions):
 ## Absolute constraints
 
 - No patient data, personal health information, or clinical decision support — ever.
-- No secrets committed to Git. Use environment variables (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_THINK`, `OLLAMA_NUM_CTX`, `EMBEDDING_MODEL`, `EMBEDDING_QUERY_PREFIX`, `PAPERS_DIR`, `PARSED_DIR`, `PDF_DIR`, `LLM_PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `QDRANT_URL`, `LOG_LEVEL`, `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, optional `LANGSMITH_ENDPOINT` for the EU region). Commit `.env.example`, never `.env`.
+- No secrets committed to Git. Use environment variables (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_THINK`, `OLLAMA_NUM_CTX`, `EMBEDDING_MODEL`, `EMBEDDING_QUERY_PREFIX`, `RERANKER_MODEL`, `PAPERS_DIR`, `PARSED_DIR`, `PDF_DIR`, `LLM_PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `QDRANT_URL`, `LOG_LEVEL`, `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, optional `LANGSMITH_ENDPOINT` for the EU region). Commit `.env.example`, never `.env`.
 - Do not make clinical claims in any generated output.

@@ -13,3 +13,5 @@ class WorkflowState(TypedDict):
     grounded: bool
     route: str
     score_threshold: float
+    rerank_top_score: float | None
+    rerank_fallback: bool

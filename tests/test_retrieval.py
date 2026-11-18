@@ -36,6 +36,7 @@ from app.retrieval.embedding import (
     get_query_prefix,
 )
 from app.retrieval.ingestion import COLLECTION_NAME, ingest, point_id
+from app.retrieval.rerank import get_reranker
 from app.retrieval.search import search, search_hits
 
 # ---------------------------------------------------------------------------
@@ -80,6 +81,7 @@ async def http_client(
     app.dependency_overrides[get_async_client] = lambda: async_qdrant
     app.dependency_overrides[get_embedding_provider] = lambda: mock_provider
     app.dependency_overrides[get_llm_provider] = lambda: fake_llm
+    app.dependency_overrides[get_reranker] = lambda: None
 
     async with (
         LifespanManager(app) as manager,

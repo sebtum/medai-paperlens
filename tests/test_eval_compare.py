@@ -21,13 +21,17 @@ from app.evaluation.compare import (
     compare_runs,
     crowding,
     curve_thresholds,
+    default_threshold,
     empty_rate_on_corpus,
     evidence_tokens,
+    gate_curve,
+    gate_thresholds,
     load_run,
     max_off_corpus_top1,
     no_result_rate_off_corpus,
     paired_bootstrap_range,
     question_scores,
+    rerank_timing,
     run_from_json,
     run_to_json,
     save_run,
@@ -42,6 +46,7 @@ from app.evaluation.metrics import RankedHit
 from app.evaluation.report import (
     R9_SENTENCE,
     render_comparison,
+    render_gate_curve,
     render_run_summary,
     render_threshold_curve,
 )
@@ -475,3 +480,255 @@ def test_reports_contain_no_non_ascii_symbols() -> None:
         render_threshold_curve(threshold_curve(run, golden)),
     ]
     assert all(text.isascii() for text in texts)
+
+
+# ------------------------------------------------------------ reranked runs (Phase 10)
+
+
+def _meta(name: str = "r", **config: object) -> RunMeta:
+    return RunMeta(
+        name=name,
+        config=dict(config),
+        golden_sha256="a" * 64,
+        git_hash="abc1234",
+        chunk_count=600,
+    )
+
+
+def _rerank_run(
+    golden: list[GoldenEntry],
+    scores: dict[str, float],
+    *,
+    rerank_ms: dict[str, float] | None = None,
+    score_kind: str = "rerank",
+) -> RunRecord:
+    """One hit per question, sitting in the labelled section, with the given score.
+
+    Off-corpus questions get a hit in an unrelated section.
+    """
+    questions = []
+    for entry in golden:
+        if entry.type is OFF:
+            hits = (_hit("p9", "Unrelated", scores[entry.id]),)
+        else:
+            label = entry.relevant[0]
+            hits = (_hit(label.paper_id, label.section, scores[entry.id]),)
+        ms = None if rerank_ms is None else rerank_ms.get(entry.id)
+        questions.append(
+            QuestionRun(id=entry.id, type=entry.type, hits=hits, rerank_ms=ms)
+        )
+    return RunRecord(
+        meta=_meta("rr", score_kind=score_kind, reranker="some/reranker"),
+        questions=tuple(questions),
+    )
+
+
+def test_run_without_score_kind_is_a_cosine_run() -> None:
+    legacy = _meta(embedder="bge-small")  # written before Phase 10
+    assert legacy.score_kind == "cosine"
+    assert default_threshold(legacy) == 0.6
+
+
+def test_reranked_run_defaults_to_no_cut() -> None:
+    assert _meta(score_kind="rerank").score_kind == "rerank"
+    assert default_threshold(_meta(score_kind="rerank")) == 0.0
+    assert default_threshold(_meta(score_kind="cosine")) == 0.6
+
+
+def test_rerank_ms_roundtrips_and_is_omitted_when_absent(tmp_path: Path) -> None:
+    golden = _golden({F: 1, OFF: 1})
+    timed = _rerank_run(
+        golden,
+        {"factual-0": 0.9, "off_corpus-0": 0.1},
+        rerank_ms={"factual-0": 12.3456},
+    )
+    path = tmp_path / "rr.json"
+    save_run(timed, path)
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["questions"][0]["rerank_ms"] == 12.346
+    assert "rerank_ms" not in data["questions"][1]
+    loaded = load_run(path)
+    assert loaded.questions[0].rerank_ms == 12.346
+    assert loaded.questions[1].rerank_ms is None
+
+
+def test_dense_run_file_has_no_timing_key() -> None:
+    run = _run("baseline", _golden({F: 1}), lambda e: 1)
+    assert "rerank_ms" not in json.loads(run_to_json(run))["questions"][0]
+
+
+def test_rerank_timing_median_and_90th_percentile() -> None:
+    golden = _golden({F: 5})
+    times = {f"factual-{i}": ms for i, ms in enumerate([10.0, 20.0, 30.0, 40.0, 100.0])}
+    run = _rerank_run(golden, {e.id: 0.9 for e in golden}, rerank_ms=times)
+
+    timing = rerank_timing(run)
+
+    assert timing is not None
+    assert timing.n == 5
+    assert timing.median_ms == pytest.approx(30.0)
+    assert timing.p90_ms == pytest.approx(76.0)  # linear between 40 and 100
+
+
+def test_rerank_timing_is_none_for_a_dense_run() -> None:
+    assert rerank_timing(_run("a", _golden({F: 1}), lambda e: 1)) is None
+
+
+def test_rerank_timing_ignores_untimed_questions() -> None:
+    golden = _golden({F: 2})
+    run = _rerank_run(golden, {e.id: 0.9 for e in golden}, rerank_ms={"factual-0": 8.0})
+    timing = rerank_timing(run)
+    assert timing is not None and timing.n == 1
+
+
+def test_summary_of_a_reranked_run_is_cut_at_zero_by_default() -> None:
+    golden = _golden({F: 2, OFF: 1})
+    # Reranker scores are low but the labelled section is in the list.
+    scores = {"factual-0": 0.02, "factual-1": 0.03, "off_corpus-0": 0.01}
+    run = _rerank_run(golden, scores)
+
+    summary = summarize_run(run, golden)
+
+    assert summary.threshold == 0.0
+    assert summary.by_k[1].recall == 1.0  # a 0.6 cut would have emptied every list
+    assert summary.empty_rate_on_corpus == 0.0
+    # The same hits as a cosine run are all cut at 0.6.
+    cosine = RunRecord(meta=_meta("c"), questions=run.questions)
+    assert summarize_run(cosine, golden).by_k[1].recall == 0.0
+
+
+def test_summary_reports_wrong_section_share() -> None:
+    golden = _golden({F: 1})
+    label = golden[0].relevant[0]
+    hits = (
+        _hit(label.paper_id, label.section, 0.9),
+        _hit(label.paper_id, "Other section", 0.8, index=1),  # right paper
+        _hit("p9", "Elsewhere", 0.7, index=2),  # wrong paper
+        _hit(label.paper_id, "Another section", 0.7, index=3),  # right paper
+    )
+    run = RunRecord(
+        meta=_meta("w"),
+        questions=(QuestionRun(id=golden[0].id, type=F, hits=hits),),
+    )
+
+    rows = {row.k: row for row in summarize_run(run, golden).by_k}
+
+    assert rows[5].wrong_section_share == pytest.approx(0.5)  # 2 of 4 chunks
+    assert rows[3].wrong_section_share == pytest.approx(1 / 3)  # 1 of the first 3
+
+
+def test_run_summary_report_shows_wrong_section_and_timing() -> None:
+    golden = _golden({F: 2, OFF: 1})
+    scores = {"factual-0": 0.9, "factual-1": 0.8, "off_corpus-0": 0.1}
+    times = {"factual-0": 10.0, "factual-1": 30.0}
+    run = _rerank_run(golden, scores, rerank_ms=times)
+    config = dict(run.meta.config)
+    config.update(
+        rerank_query="rewritten",
+        prefilter_threshold=0.6,
+        reranker_load_s=4.2,
+        reranker_disk_bytes=91_000_000,
+    )
+    run = RunRecord(
+        meta=RunMeta("rr", config, "a" * 64, "abc1234", 600), questions=run.questions
+    )
+
+    text = render_run_summary(summarize_run(run, golden))
+
+    assert "Wrong section" in text
+    assert "## Reranker" in text
+    assert "some/reranker" in text
+    assert "Score kind: rerank" in text
+    assert "20 ms (n=2)" in text  # median of 10 and 30
+    assert "4.2 s" in text
+    assert "91 MB" in text
+    assert R9_SENTENCE in text
+
+
+def test_run_summary_report_of_a_dense_run_has_no_reranker_section() -> None:
+    golden = _golden({F: 1})
+    text = render_run_summary(summarize_run(_run("a", golden, lambda e: 1), golden))
+    assert "## Reranker" not in text
+    assert "Score kind: cosine" in text
+
+
+def test_gate_thresholds_cover_zero_to_one() -> None:
+    steps = gate_thresholds()
+    assert steps[0] == 0.0 and steps[-1] == 1.0
+    assert list(steps) == sorted(set(steps))
+    assert {0.01, 0.5, 0.99} <= set(steps)
+
+
+def test_gate_curve_counts_refused_and_lost_on_the_top_one_score() -> None:
+    golden = _golden({F: 2, OFF: 2})
+    scores = {
+        "factual-0": 0.9,
+        "factual-1": 0.3,
+        "off_corpus-0": 0.2,
+        "off_corpus-1": 0.6,
+    }
+    run = _rerank_run(golden, scores)
+
+    curve = gate_curve(run, golden, thresholds=(0.0, 0.25, 0.5, 0.95))
+    points = {point.threshold: point for point in curve.points}
+
+    assert (curve.n_on_corpus, curve.n_off_corpus) == (2, 2)
+    assert (points[0.0].off_refused, points[0.0].on_lost) == (0, 0)
+    # t = 0.25: off_corpus-0 (0.2) is refused; on-corpus questions all stay.
+    assert (points[0.25].off_refused, points[0.25].on_lost) == (1, 0)
+    # t = 0.5: factual-1 (0.3) is lost together with off_corpus-0.
+    assert (points[0.5].off_refused, points[0.5].on_lost) == (1, 1)
+    # t = 0.95: everything is refused, so everything on-corpus is lost.
+    assert (points[0.95].off_refused, points[0.95].on_lost) == (2, 2)
+    assert points[0.5].off_refused_rate == 0.5
+    assert points[0.5].on_lost_rate == 0.5
+
+
+def test_gate_curve_uses_the_best_hit_not_the_first() -> None:
+    golden = _golden({F: 1})
+    label = golden[0].relevant[0]
+    hits = (_hit("p9", "x", 0.1), _hit(label.paper_id, label.section, 0.8, index=1))
+    run = RunRecord(
+        meta=_meta("g"), questions=(QuestionRun(id=golden[0].id, type=F, hits=hits),)
+    )
+    (point,) = gate_curve(run, golden, thresholds=(0.5,)).points
+    assert point.on_lost == 0
+
+
+def test_gate_curve_treats_no_hits_as_refused() -> None:
+    golden = _golden({F: 1, OFF: 1})
+    run = RunRecord(
+        meta=_meta("g"),
+        questions=tuple(QuestionRun(id=e.id, type=e.type, hits=()) for e in golden),
+    )
+    (point,) = gate_curve(run, golden, thresholds=(0.0,)).points
+    assert (point.off_refused, point.on_lost) == (1, 1)
+
+
+def test_gate_curve_without_off_corpus_has_no_refused_rate() -> None:
+    golden = _golden({F: 1})
+    run = _rerank_run(golden, {"factual-0": 0.9})
+    (point,) = gate_curve(run, golden, thresholds=(0.5,)).points
+    assert point.off_refused_rate is None
+
+
+def test_gate_curve_report_lists_counts_and_the_caveat() -> None:
+    golden = _golden({F: 2, OFF: 2})
+    scores = {
+        "factual-0": 0.9,
+        "factual-1": 0.3,
+        "off_corpus-0": 0.2,
+        "off_corpus-1": 0.6,
+    }
+    run = _rerank_run(golden, scores)
+
+    text = render_gate_curve(gate_curve(run, golden))
+
+    assert "Refusal curve: rr" in text
+    assert "Off-corpus refused" in text and "On-corpus lost" in text
+    assert "| 0.50 | 1 / 2 | 0.50 | 1 / 2 | 0.50 |" in text
+    assert "| 0.00 | 0 / 2 |" in text and "| 1.00 |" in text
+    assert "top-1" in text
+    assert R9_SENTENCE in text
+    assert all(ord(ch) < 128 for ch in text)

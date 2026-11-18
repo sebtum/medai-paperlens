@@ -18,6 +18,7 @@ from app.evaluation.metrics import (
     recall_at_k,
     recall_ceiling_at_k,
     table_hit,
+    wrong_section_share,
 )
 
 
@@ -311,3 +312,39 @@ def test_table_hit_needs_table_chunk_in_labelled_section() -> None:
     assert not table_hit(
         hits, {("a", "s1"): 2}, k=3, threshold=0.6
     )  # labelled section is text
+
+
+# wrong_section_share -----------------------------------------------------------------
+
+
+def test_wrong_section_share_counts_right_paper_unlabelled_section() -> None:
+    # Labelled papers: a and d. Top 5 chunks (all >= 0.6 except the last):
+    # a/s1 labelled, a/s1 labelled, b/s2 wrong paper, a/s3 labelled, c/s4 wrong paper.
+    assert wrong_section_share(HITS, LABELS, k=5, threshold=0.6) == 0.0
+    # The 6th chunk, a/s5, is the right paper but an unlabelled section.
+    assert wrong_section_share(HITS, LABELS, k=6, threshold=0.0) == pytest.approx(1 / 6)
+
+
+def test_wrong_section_share_denominator_is_the_chunks_kept() -> None:
+    hits = [
+        hit("a", "s1", 0.9, 0),  # labelled
+        hit("a", "x", 0.8, 1),  # right paper, wrong section
+        hit("a", "y", 0.7, 2),  # right paper, wrong section
+        hit("b", "z", 0.65, 0),  # wrong paper: not counted as wrong section
+    ]
+    labels: Labels = {("a", "s1"): 2}
+    assert wrong_section_share(hits, labels, k=4, threshold=0.6) == 0.5
+    assert wrong_section_share(hits, labels, k=2, threshold=0.6) == 0.5
+    # The threshold removes the chunks it cuts from the denominator too.
+    assert wrong_section_share(hits, labels, k=4, threshold=0.75) == 0.5
+    assert wrong_section_share(hits, labels, k=4, threshold=0.95) == 0.0
+
+
+def test_wrong_section_share_threshold_is_optional() -> None:
+    hits = [hit("a", "s1", 0.1, 0), hit("a", "x", 0.05, 1)]
+    assert wrong_section_share(hits, {("a", "s1"): 2}, 2) == 0.5
+
+
+def test_wrong_section_share_rejects_empty_labels() -> None:
+    with pytest.raises(ValueError, match="labels"):
+        wrong_section_share(HITS, {}, k=5, threshold=0.6)

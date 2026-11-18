@@ -6,14 +6,18 @@
   committed.
 - `pool_candidates` / `render_pool` list, per question, the sections in each run's top-k
   that no label covers (pooling). Ids and section labels only, no chunk text.
+- `adjudicated.jsonl` (Phase 10) remembers the candidates that were read and rejected,
+  so later passes do not list them again. A candidate that was accepted becomes a
+  label in `golden.jsonl`, so only rejections are stored. Ids and section labels only.
 
 Every command returns the lines to print; the script prints them.
 """
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,12 +33,16 @@ from app.evaluation.golden import (
 )
 from app.evaluation.metrics import RankedHit, cut
 from app.evaluation.runner import (
+    EVAL_DIR,
     REPO_ROOT,
     RunError,
     load_runs,
     write_text,
 )
 from app.evaluation.target import CorpusIndex, scan_collection
+
+DEFAULT_ADJUDICATED = EVAL_DIR / "adjudicated.jsonl"
+"""Rejected pooling candidates, one JSON object per line."""
 
 POOL_DEFAULT_K = 10
 POOL_DEFAULT_THRESHOLD = 0.40  # lowest threshold of the curve, so pooling covers it
@@ -176,6 +184,63 @@ async def sections_command(
 # ---------------------------------------------------------------------------
 
 
+Rejection = tuple[str, str, str]
+"""`(question_id, paper_id, section)` of a candidate that was read and rejected."""
+
+
+def load_adjudicated(path: Path) -> set[Rejection]:
+    """Rejected candidates from `path`; a missing file is empty, a bad line raises."""
+    rejected: set[Rejection] = set()
+    if not path.exists():
+        return rejected
+    with path.open(encoding="utf-8") as handle:
+        for line_no, raw in enumerate(handle, start=1):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+                rejected.add(
+                    (str(row["question_id"]), str(row["paper_id"]), str(row["section"]))
+                )
+            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                raise RunError(
+                    f"{path}:{line_no}: bad adjudication line: {exc}"
+                ) from exc
+    return rejected
+
+
+def record_rejections(
+    path: Path,
+    rejections: Sequence[Rejection],
+    *,
+    reason: str = "",
+) -> int:
+    """Append rejected candidates to `path`; returns how many were new.
+
+    A candidate that is already recorded is not written twice.
+    """
+    known = load_adjudicated(path)
+    fresh: list[Rejection] = []
+    for item in rejections:
+        if item not in known and item not in fresh:
+            fresh.append(item)
+    if fresh:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            for question_id, paper_id, section in fresh:
+                row = {
+                    "question_id": question_id,
+                    "paper_id": paper_id,
+                    "section": section,
+                    "decision": "rejected",
+                }
+                if reason:
+                    row["reason"] = reason
+                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    return len(fresh)
+
+
 @dataclass
 class PoolCandidate:
     """An unlabelled section seen in the top-k of at least one run."""
@@ -195,10 +260,12 @@ def pool_candidates(
     k: int = POOL_DEFAULT_K,
     threshold: float = POOL_DEFAULT_THRESHOLD,
     include_off_corpus: bool = False,
+    skip: Collection[Rejection] = (),
 ) -> dict[str, list[PoolCandidate]]:
     """Per question id: sections in any run's top-k (chunk level) that no label covers.
 
-    The rank is the chunk's position in that run's cut list (1 = best).
+    The rank is the chunk's position in that run's cut list (1 = best). Candidates in
+    `skip` (already read and rejected) are left out.
     """
     result: dict[str, list[PoolCandidate]] = {}
     for entry in golden:
@@ -213,7 +280,7 @@ def pool_candidates(
             hits: list[RankedHit] = cut(question.hits, k, threshold)
             for rank, hit in enumerate(hits, start=1):
                 key = (hit.paper_id, hit.section)
-                if key in labelled:
+                if key in labelled or (entry.id, *key) in skip:
                     continue
                 candidate = found.setdefault(
                     key,
@@ -285,20 +352,44 @@ def pool_command(
     threshold: float = POOL_DEFAULT_THRESHOLD,
     include_off_corpus: bool = False,
     out: Path | None = None,
+    adjudicated: Path = DEFAULT_ADJUDICATED,
+    reject: Sequence[Rejection] = (),
+    reason: str = "",
 ) -> list[str]:
-    """Pooling list for `runs`; written to `out` or returned as the lines to print."""
+    """Pooling list for `runs`; written to `out` or returned as the lines to print.
+
+    `reject` first records candidates as read and rejected in `adjudicated`; every pass
+    skips what that file holds.
+    """
     entries = load_golden(golden_path)
     sha256 = golden_sha256(golden_path)
     records = load_runs(runs, runs_dir, sha256, golden_path)
+    notes: list[str] = []
+    if reject:
+        known = {entry.id for entry in entries}
+        unknown = sorted({item[0] for item in reject} - known)
+        if unknown:
+            raise RunError(f"--reject names unknown question(s): {', '.join(unknown)}")
+        added = record_rejections(adjudicated, reject, reason=reason)
+        notes.append(
+            f"Rejected {added} new candidate(s) ({len(reject) - added} already "
+            f"recorded) in {adjudicated}"
+        )
+    skip = load_adjudicated(adjudicated)
     pools = pool_candidates(
         records,
         entries,
         k=k,
         threshold=threshold,
         include_off_corpus=include_off_corpus,
+        skip=skip,
     )
     text = render_pool(pools, entries, records, k=k, threshold=threshold)
+    if skip:
+        text += (
+            f"{len(skip)} rejected candidate(s) in {adjudicated.name} are skipped.\n"
+        )
     if out is not None:
         write_text(out, text)
-        return [f"Pooling list written: {out}"]
-    return [text]
+        return [*notes, f"Pooling list written: {out}"]
+    return [*notes, text]

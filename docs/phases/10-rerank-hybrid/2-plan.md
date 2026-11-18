@@ -41,15 +41,15 @@ The rewriter's output loses a leading "Rewritten question:", and the 6 stored re
   - [x] `rewrites.jsonl` is rewritten once, with new keys and cleaned text. Exactly 6 rewrite texts change, which is logged in `CHANGELOG.md`. A test checks that no stored rewrite starts with the prefix.
 - Note: Done 2026-11-18. Exactly 6 changed (q009, q015, q029, q031, q035, q042), no Ollama call. Report: `3-execute-T1.md`.
 
-### [ ] T2: Clean baseline re-run
+### [x] T2: Clean baseline re-run
 Re-run the four Phase 9 setups with the clean rewrites and check that the Phase 9 outcomes still hold.
 - Files: `data/eval/runs/{baseline,no_rewrite,prefix,bge_base}.json`, `data/eval/reports/*.md`
 - Depends on: T1 · Group: G2
 - Acceptance criteria:
-  - [ ] Four runs with `--no-llm`. Reports regenerated (adds the Precision and Recall-versus-ceiling columns).
-  - [ ] Comparisons `prefix`, `no_rewrite` and `bge_base` against `baseline` re-run. The result is noted against ADR-0025.
-  - [ ] **Stop and ask the owner** if an ADR-0025 outcome flips (the prefix stops winning, or no-rewrite now wins).
-- Note:
+  - [x] Four runs with `--no-llm`. Reports regenerated (adds the Precision and Recall-versus-ceiling columns).
+  - [x] Comparisons `prefix`, `no_rewrite` and `bge_base` against `baseline` re-run. The result is noted against ADR-0025.
+  - [x] **Stop and ask the owner** if an ADR-0025 outcome flips (the prefix stops winning, or no-rewrite now wins).
+- Note: Done 2026-11-18. No ADR-0025 outcome flipped. nDCG@5: baseline 0.532, prefix 0.562 (+0.030, range +0.005 to +0.056, margin thinner than Phase 9), no_rewrite 0.545 (not better), bge_base 0.544 (not better). Report: `3-execute-T2.md`.
 
 ### [x] T3: Reranker provider
 A small reranker interface plus a sentence-transformers version, built like the embedder, with no new dependency.
@@ -76,19 +76,19 @@ Claude writes 15 more off-topic questions that are medical AI but not covered by
   - Details: example: "How does GPT-4 perform on dermatology images?" Mix of near misses: same modality but a different task, a model the corpus doesn't cover, a dataset the corpus doesn't use.
 - Note:
 
-### [ ] T5: Eval support for reranking
+### [x] T5: Eval support for reranking
 The eval runner can rerank, time the reranker, and report the "right paper, wrong section" share.
 - Files: `app/evaluation/target.py`, `runner.py`, `compare.py`, `report.py`, `metrics.py`, `authoring.py`, `langsmith_eval.py`, `scripts/eval_retrieval.py`, `tests/test_eval_*.py`
 - Depends on: T3 · Group: G2
 - Acceptance criteria:
-  - [ ] `RetrievalConfig` gets `reranker: str | None`, `rerank_query: "rewritten" | "original"`, `prefilter_threshold = 0.6`. `retrieve_ranked` pre-filters at 0.6, reranks with `rerank_passage` text, sorts by score (ties keep dense order) and returns the time taken.
-  - [ ] Named configs `rerank_minilm`, `rerank_bge`, `rerank_medcpt` (built on `prefix`). CLI flags `--depth`, `--rerank-query` and `--reranker` (the name is required when used).
-  - [ ] Run meta holds `score_kind`, reranker model, load time and disk size. Each question holds `rerank_ms`, timed after one warm-up call. The report shows the median and 90th percentile.
-  - [ ] `compare` picks its default cut-off from `score_kind`. `curve --gate` sweeps refusal on the top-1 score only (0 to 1). Off-corpus refused and on-corpus lost are reported per t.
-  - [ ] New metric `wrong_section_share(hits, labels, k)`, shown in the run report.
-  - [ ] `pool` records rejected candidates in `data/eval/adjudicated.jsonl` and skips them in later passes.
-  - [ ] The LangSmith experiment threshold follows `score_kind`. Tests use fakes only. The `NAMED_CONFIGS` test is updated.
-- Note:
+  - [x] `RetrievalConfig` gets `reranker: str | None`, `rerank_query: "rewritten" | "original"`, `prefilter_threshold = 0.6`. `retrieve_ranked` pre-filters at 0.6, reranks with `rerank_passage` text, sorts by score (ties keep dense order) and returns the time taken.
+  - [x] Named configs `rerank_minilm`, `rerank_bge`, `rerank_medcpt` (built on `prefix`). CLI flags `--depth`, `--rerank-query` and `--reranker` (the name is required when used).
+  - [x] Run meta holds `score_kind`, reranker model, load time and disk size. Each question holds `rerank_ms`, timed after one warm-up call. The report shows the median and 90th percentile.
+  - [x] `compare` picks its default cut-off from `score_kind`. `curve --gate` sweeps refusal on the top-1 score only (0 to 1). Off-corpus refused and on-corpus lost are reported per t.
+  - [x] New metric `wrong_section_share(hits, labels, k)`, shown in the run report.
+  - [x] `pool` records rejected candidates in `data/eval/adjudicated.jsonl` and skips them in later passes.
+  - [x] The LangSmith experiment threshold follows `score_kind`. Tests use fakes only. The `NAMED_CONFIGS` test is updated.
+- Note: Done 2026-11-18. `--depth`, `--rerank-query` and `--reranker` require `--name` (read as the run name, so a variant never overwrites a config file). `fetch_chunk_payloads` lives in `target.py` (circular import otherwise). Report: `3-execute-T5.md`.
 
 ### [ ] T6: Reranker runs, labelling pass, freeze v2
 Run all reranker setups, label the hits they lift into the top 5 the same way as in Phase 9, and freeze golden set v2.
@@ -110,17 +110,17 @@ Compare each reranker with today's default. Then Execute stops so the owner can 
   - [ ] ADR-0026 records every outcome with numbers and the LLM-labelled caveat, including "nothing adopted" if no model passes.
 - Note:
 
-### [ ] T8: Rerank step in the app
+### [x] T8: Rerank step in the app
 A new workflow step between retrieve and generate. The UI shows it, and the citations event comes after it.
 - Files: `app/workflow/rerank.py`, `graph.py`, `state.py`, `retrieve.py`, `app/api/routes/query.py`, `ui/app.py`, `docker-compose.yml`, `.env.example`, `tests/test_workflow.py`, `test_query.py`, `test_query_stream.py`, `test_retrieval.py`, `test_model_status.py`
 - Depends on: T3 · Group: G2 (its default model is set after T7)
 - Acceptance criteria:
-  - [ ] `make_rerank_node(reranker, *, keep=5)`. Without a reranker it cuts to 5. On an error it logs, keeps the vector order cut to 5, and sets `rerank_fallback`.
-  - [ ] `retrieve_node` fetches `RETRIEVE_DEPTH` (20). `build_workflow(client, provider, llm, reranker)`. `WorkflowState` gets `rerank_top_score: float | None`. `_initial_state` updated.
-  - [ ] SSE `citations` is sent when `rerank` ends (it was `retrieve`). Debug gets `rerank_model` and `rerank_top_score`. `confidence` is unchanged (cosine).
-  - [ ] UI label "Reranking passages". `RERANKER_MODEL` added to the Compose `api` service and `.env.example`. The model goes into the shared Hugging Face cache volume.
-  - [ ] Tests: node unit tests (order, cut, fallback, off), stream order with 6 steps, and `get_reranker` overridden in every API test.
-- Note:
+  - [x] `make_rerank_node(reranker, *, keep=5)`. Without a reranker it cuts to 5. On an error it logs, keeps the vector order cut to 5, and sets `rerank_fallback`.
+  - [x] `retrieve_node` fetches `RETRIEVE_DEPTH` (20). `build_workflow(client, provider, llm, reranker)`. `WorkflowState` gets `rerank_top_score: float | None`. `_initial_state` updated.
+  - [x] SSE `citations` is sent when `rerank` ends (it was `retrieve`). Debug gets `rerank_model` and `rerank_top_score`. `confidence` is unchanged (cosine).
+  - [x] UI label "Reranking passages". `RERANKER_MODEL` added to the Compose `api` service and `.env.example`. The model goes into the shared Hugging Face cache volume.
+  - [x] Tests: node unit tests (order, cut, fallback, off), stream order with 6 steps, and `get_reranker` overridden in every API test.
+- Note: Done 2026-11-18. Beyond the plan: `WorkflowState.rerank_fallback` and a `rerank_fallback` debug field; `build_workflow` takes the reranker as a required argument (`None` = off). Default model stays off until T7. Model loads lazily on the first request (no warm-up yet; decide after T7). Docker path not checked (Verify). Report: `3-execute-T8.md`.
 
 ### [ ] T9: Refusal in the app (only if T7 picks a cut-off or a label)
 With a hard cut-off, the app answers "No relevant papers found." below the chosen reranker score, and `confidence` becomes the reranker score. With the label option, the app still answers, and the UI adds "the papers may not cover this".
