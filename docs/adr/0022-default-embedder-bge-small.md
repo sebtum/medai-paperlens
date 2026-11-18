@@ -27,7 +27,8 @@ stay small enough for CPU-only ingest and query latency (A3).
 - In Docker Compose, `ingest` and `api` read the same `EMBEDDING_MODEL` variable, so
   query and document vectors always come from the same model.
 - No bge query instruction prefix yet. Splitting `EmbeddingProvider` into query and
-  document embedding is Phase 9.
+  document embedding is Phase 9. (Amended by ADR-0025: the BGE query prefix was adopted
+  after Phase 9 measured it, and no `EmbeddingProvider` split was needed.)
 
 ## Alternatives Considered
 

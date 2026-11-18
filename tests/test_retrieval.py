@@ -22,13 +22,21 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+from app.evaluation.metrics import RankedHit
 from app.llm.factory import get_llm_provider
 from app.main import app
 from app.models.query import DEFAULT_SCORE_THRESHOLD, QueryRequest
 from app.retrieval.client import get_async_client
-from app.retrieval.embedding import embed, get_embedding_provider, get_model_name
+from app.retrieval.embedding import (
+    BGE_QUERY_PREFIX,
+    SentenceTransformerProvider,
+    embed,
+    get_embedding_provider,
+    get_model_name,
+    get_query_prefix,
+)
 from app.retrieval.ingestion import COLLECTION_NAME, ingest, point_id
-from app.retrieval.search import search
+from app.retrieval.search import search, search_hits
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -111,6 +119,73 @@ class TestEmbeddingModelName:
     ) -> None:
         monkeypatch.setenv("EMBEDDING_MODEL", "")
         assert get_model_name() == "BAAI/bge-small-en-v1.5"
+
+
+class TestQueryPrefix:
+    """ADR-0025: the prefix is put in front of queries only, never of documents."""
+
+    async def test_provider_prepends_the_prefix_to_queries(
+        self, mock_model: MagicMock
+    ) -> None:
+        provider = SentenceTransformerProvider(mock_model, query_prefix="Q: ")
+        await provider.embed("what is a CNN?")
+        mock_model.encode.assert_called_once_with("Q: what is a CNN?")
+
+    async def test_provider_without_prefix_embeds_the_text_as_is(
+        self, mock_model: MagicMock
+    ) -> None:
+        await SentenceTransformerProvider(mock_model).embed("what is a CNN?")
+        mock_model.encode.assert_called_once_with("what is a CNN?")
+
+    def test_ingestion_embeds_documents_without_the_prefix(
+        self, tmp_path: Path, fake_qdrant: FakeQdrant, ingest_model: MagicMock
+    ) -> None:
+        # ingestion takes the raw model, not the provider, so no prefix can reach it
+        paper = {"title": "T", "authors": ["A"], "year": 2024, "abstract": "Imaging."}
+        (tmp_path / "paper.json").write_text(json.dumps(paper))
+        ingest(
+            tmp_path,
+            fake_qdrant,  # type: ignore[arg-type]
+            ingest_model,
+            model_name=MODEL_NAME,
+            tokenizer=WhitespaceTokenizer(max_tokens=200),
+        )
+        texts = [t for call in ingest_model.encode.call_args_list for t in call.args[0]]
+        assert texts
+        assert not any(BGE_QUERY_PREFIX in t for t in texts)
+
+    def test_unset_variable_and_bge_model_gives_the_bge_instruction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("EMBEDDING_QUERY_PREFIX", raising=False)
+        assert get_query_prefix("BAAI/bge-small-en-v1.5") == BGE_QUERY_PREFIX
+        assert get_query_prefix("BAAI/bge-base-en-v1.5") == BGE_QUERY_PREFIX
+
+    def test_default_model_name_is_read_from_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("EMBEDDING_QUERY_PREFIX", raising=False)
+        monkeypatch.setenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+        assert get_query_prefix() == ""
+        monkeypatch.delenv("EMBEDDING_MODEL")
+        assert get_query_prefix() == BGE_QUERY_PREFIX
+
+    def test_empty_variable_switches_the_prefix_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMBEDDING_QUERY_PREFIX", "")
+        assert get_query_prefix("BAAI/bge-small-en-v1.5") == ""
+
+    def test_set_variable_is_used_as_is(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("EMBEDDING_QUERY_PREFIX", "query: ")
+        assert get_query_prefix("BAAI/bge-small-en-v1.5") == "query: "
+        assert get_query_prefix("some/other-model") == "query: "
+
+    def test_non_bge_model_gets_no_prefix_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("EMBEDDING_QUERY_PREFIX", raising=False)
+        assert get_query_prefix("sentence-transformers/all-MiniLM-L6-v2") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +591,134 @@ class TestIngest:
         assert "delete_collection" not in fake_qdrant.calls
 
 
+class RecordingQdrant(FakeQdrant):
+    """FakeQdrant that records which collection each call addressed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.touched: list[tuple[str, str]] = []
+
+    def create_collection(
+        self, collection_name: str, vectors_config: VectorParams
+    ) -> None:
+        self.touched.append(("create_collection", collection_name))
+        super().create_collection(collection_name, vectors_config)
+
+    def delete_collection(self, collection_name: str) -> None:
+        self.touched.append(("delete_collection", collection_name))
+        # FakeQdrant keeps one flat point store; keep it so only the call is recorded.
+        points = self.points
+        super().delete_collection(collection_name)
+        self.points = points
+
+    def get_collection(self, collection_name: str) -> SimpleNamespace:
+        self.touched.append(("get_collection", collection_name))
+        return super().get_collection(collection_name)
+
+    def scroll(
+        self, collection_name: str, limit: int, **kwargs: Any
+    ) -> tuple[list[SimpleNamespace], None]:
+        self.touched.append(("scroll", collection_name))
+        return super().scroll(collection_name, limit, **kwargs)
+
+    def delete(self, collection_name: str, points_selector: FilterSelector) -> None:
+        self.touched.append(("delete", collection_name))
+        super().delete(collection_name, points_selector)
+
+    def upsert(self, collection_name: str, points: list[PointStruct]) -> None:
+        self.touched.append(("upsert", collection_name))
+        super().upsert(collection_name, points)
+
+
+class TestIngestCollectionName:
+    EVAL = "eval_test-embedder"
+
+    def _write_paper(self, tmp_path: Path) -> None:
+        paper = {
+            "title": "Test Paper",
+            "authors": ["Author A"],
+            "year": 2024,
+            "doi": "10.test/123",
+            "abstract": "A test abstract about AI in medicine.",
+        }
+        (tmp_path / "paper.json").write_text(json.dumps(paper))
+
+    def _ingest(
+        self,
+        tmp_path: Path,
+        client: RecordingQdrant,
+        model: MagicMock,
+        **kwargs: Any,
+    ) -> int:
+        return ingest(
+            tmp_path,
+            client,  # type: ignore[arg-type]
+            model,
+            model_name=MODEL_NAME,
+            tokenizer=WhitespaceTokenizer(max_tokens=200),
+            **kwargs,
+        )
+
+    def test_default_collection_is_papers(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+
+        self._ingest(tmp_path, client, ingest_model)
+
+        assert set(client.collections) == {COLLECTION_NAME}
+        assert {name for _, name in client.touched} == {COLLECTION_NAME}
+
+    def test_non_default_collection_leaves_papers_untouched(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+        client.collections[COLLECTION_NAME] = VectorParams(
+            size=TEST_VECTOR_DIM, distance=Distance.COSINE
+        )
+        client.points["app"] = PointStruct(
+            id="app",
+            vector=[0.0],
+            payload={"paper_id": "paper", "embedding_model": "app/embedder"},
+        )
+
+        count = self._ingest(
+            tmp_path, client, ingest_model, collection_name=self.EVAL, overwrite=True
+        )
+
+        assert count == 1
+        assert set(client.collections) == {COLLECTION_NAME, self.EVAL}
+        # Every call addressed the eval collection; `papers` was never read or written.
+        assert client.touched
+        assert {name for _, name in client.touched} == {self.EVAL}
+        assert client.collections[COLLECTION_NAME].size == TEST_VECTOR_DIM
+
+    def test_stale_check_and_recreation_apply_to_the_named_collection(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+        for name in (COLLECTION_NAME, self.EVAL):
+            client.collections[name] = VectorParams(
+                size=TEST_VECTOR_DIM, distance=Distance.COSINE
+            )
+        client.points["old"] = PointStruct(
+            id="old",
+            vector=[0.0],
+            payload={"paper_id": "old", "embedding_model": "other/embedder"},
+        )
+
+        self._ingest(tmp_path, client, ingest_model, collection_name=self.EVAL)
+
+        assert ("get_collection", self.EVAL) in client.touched
+        assert ("delete_collection", self.EVAL) in client.touched
+        assert ("create_collection", self.EVAL) in client.touched
+        assert COLLECTION_NAME in client.collections
+        assert all(name == self.EVAL for _, name in client.touched)
+
+
 # ---------------------------------------------------------------------------
 # TestSearch
 # ---------------------------------------------------------------------------
@@ -665,6 +868,140 @@ class TestSearch:
 
         citations, _ = await search(vector, async_qdrant)
         assert citations == []
+
+
+class TestSearchCollectionName:
+    async def test_search_defaults_to_papers_and_accepts_a_collection(
+        self, async_qdrant: AsyncMock
+    ) -> None:
+        vector = np.zeros(TEST_VECTOR_DIM, dtype=np.float32)
+
+        await search(vector, async_qdrant)
+        kwargs = async_qdrant.query_points.call_args.kwargs
+        assert kwargs["collection_name"] == COLLECTION_NAME
+
+        await search(vector, async_qdrant, collection_name="eval_x")
+        kwargs = async_qdrant.query_points.call_args.kwargs
+        assert kwargs["collection_name"] == "eval_x"
+
+
+class TestSearchHits:
+    def _point(self, payload: dict, score: float, point_id: int = 0) -> MagicMock:
+        point = MagicMock()
+        point.payload = payload
+        point.score = score
+        point.id = point_id
+        return point
+
+    def _payload(self, **overrides: object) -> dict:
+        return {
+            "title": "T",
+            "authors": [],
+            "year": 2024,
+            "text": "body",
+            "paper_id": "p1",
+            "section": "Methods > Datasets",
+            "chunk_index": 3,
+            "chunk_type": "table",
+            **overrides,
+        }
+
+    async def test_returns_scores_and_chunk_type_in_rank_order(
+        self, async_qdrant: AsyncMock
+    ) -> None:
+        async_qdrant.query_points.return_value.points = [
+            self._point(self._payload(), 0.91),
+            self._point(
+                self._payload(paper_id="p2", chunk_index=0, chunk_type="text"), 0.42, 1
+            ),
+        ]
+
+        hits = await search_hits(
+            np.zeros(TEST_VECTOR_DIM, dtype=np.float32),
+            async_qdrant,
+            top_k=20,
+            score_threshold=0.0,
+        )
+
+        assert hits == [
+            RankedHit("p1", "Methods > Datasets", 3, "table", 0.91),
+            RankedHit("p2", "Methods > Datasets", 0, "text", 0.42),
+        ]
+
+    async def test_passes_query_parameters_through(
+        self, async_qdrant: AsyncMock
+    ) -> None:
+        vector = np.zeros(TEST_VECTOR_DIM, dtype=np.float32)
+
+        await search_hits(
+            vector,
+            async_qdrant,
+            top_k=20,
+            score_threshold=0.0,
+            collection_name="eval_x",
+        )
+
+        kwargs = async_qdrant.query_points.call_args.kwargs
+        assert kwargs["collection_name"] == "eval_x"
+        assert kwargs["limit"] == 20
+        assert kwargs["score_threshold"] == 0.0
+
+    async def test_default_collection_is_papers(self, async_qdrant: AsyncMock) -> None:
+        await search_hits(
+            np.zeros(TEST_VECTOR_DIM, dtype=np.float32),
+            async_qdrant,
+            top_k=5,
+            score_threshold=0.6,
+        )
+
+        kwargs = async_qdrant.query_points.call_args.kwargs
+        assert kwargs["collection_name"] == COLLECTION_NAME
+
+    async def test_missing_chunk_type_counts_as_text(
+        self, async_qdrant: AsyncMock
+    ) -> None:
+        payload = self._payload()
+        del payload["chunk_type"]
+        async_qdrant.query_points.return_value.points = [self._point(payload, 0.7)]
+
+        (hit,) = await search_hits(
+            np.zeros(TEST_VECTOR_DIM, dtype=np.float32),
+            async_qdrant,
+            top_k=5,
+            score_threshold=0.0,
+        )
+
+        assert hit.chunk_type == "text"
+
+    async def test_skips_points_without_chunk_identity(
+        self, async_qdrant: AsyncMock
+    ) -> None:
+        async_qdrant.query_points.return_value.points = [
+            self._point(self._payload(paper_id=123), 0.9, 0),
+            self._point(self._payload(section=None), 0.8, 1),
+            self._point(self._payload(chunk_index=True), 0.7, 2),
+            self._point({"title": "legacy", "text": "x"}, 0.6, 3),
+            self._point(self._payload(chunk_index=5), 0.5, 4),
+        ]
+
+        hits = await search_hits(
+            np.zeros(TEST_VECTOR_DIM, dtype=np.float32),
+            async_qdrant,
+            top_k=5,
+            score_threshold=0.0,
+        )
+
+        assert [h.chunk_index for h in hits] == [5]
+
+    async def test_empty_results(self, async_qdrant: AsyncMock) -> None:
+        hits = await search_hits(
+            np.zeros(TEST_VECTOR_DIM, dtype=np.float32),
+            async_qdrant,
+            top_k=5,
+            score_threshold=0.0,
+        )
+
+        assert hits == []
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ It answers research questions over a curated corpus of full-text public medical 
 - **Real document RAG.** Full-text PDFs are parsed into structure-aware chunks, not abstracts, so retrieval has to find the right passage inside a paper rather than the right paper among a handful.
 - **Grounded answers.** Each claim points back to a paper, section and page, and a grounding validator checks that the cited evidence supports the answer.
 - **Retrieval quality.** Dense vector search is combined with keyword search and a cross-encoder reranker, so that exact model names and acronyms (MAIRA-2, CONCH, Med-PaLM M) are found as reliably as paraphrased concepts.
-- **Measurable evaluation.** A hand-labeled golden question set drives retrieval metrics (Recall@k, MRR, nDCG@k) across configurations. An LLM-as-judge scores faithfulness, citation correctness and relevance, and is itself calibrated against human ratings. The safety filter is evaluated for precision and recall. Datasets, experiments and traces are tracked in LangSmith.
+- **Measurable evaluation.** An LLM-labelled golden question set (written by Claude, not human-verified) drives retrieval metrics (Recall@k, MRR, nDCG@k) across configurations. An LLM-as-judge scores faithfulness, citation correctness and relevance, and is itself calibrated against human ratings (planned). The safety filter is evaluated for precision and recall. Datasets, experiments and traces are tracked in LangSmith.
 - **Responsive UX on modest hardware.** Answers stream token by token with visible pipeline steps. A small local model is the default, and a hosted model is available as an opt-in.
 - **Local-first and safe by design.** Runs fully offline with Ollama. External providers are opt-in only. Public papers only, never patient data.
 
@@ -80,6 +80,7 @@ Evaluation
 - [`docs/architecture.md`](docs/architecture.md) — system design
 - [`docs/adr/`](docs/adr/) — architecture decision records
 - [`docs/benchmarks.md`](docs/benchmarks.md) — LLM speed measurements
+- [`data/eval/reports/`](data/eval/reports/) — retrieval evaluation reports
 - [`docs/roadmap.md`](docs/roadmap.md) — project direction
 
 ## Running with Docker Compose
@@ -139,6 +140,67 @@ changed. See [ADR-0020](docs/adr/0020-pdf-parser.md),
 [ADR-0021](docs/adr/0021-structure-aware-chunking.md) and
 [ADR-0022](docs/adr/0022-default-embedder-bge-small.md).
 
+## Retrieval evaluation
+
+A golden set of 50 questions (`data/eval/golden.jsonl`) scores retrieval by
+Recall@k, MRR and nDCG@k over `(paper, section)` labels. The runner needs Qdrant with the
+full-text corpus ingested (its pre-flight check fails on a mismatch), and Ollama only
+to create new query rewrites. **The golden set is LLM-labelled:
+Claude wrote and labelled it, and no human has verified it.** Treat the numbers as
+indicative, not as proof. Method: [ADR-0023](docs/adr/0023-golden-set-methodology.md),
+[ADR-0024](docs/adr/0024-eval-dataset-versioning-and-runner.md); outcome and the retrieval
+defaults it led to: [ADR-0025](docs/adr/0025-retrieval-defaults-after-eval.md).
+
+```powershell
+# Run one named config: pre-flight check, retrieve, write a run file and a report
+.\.venv\Scripts\python.exe -m scripts.eval_retrieval run --config baseline --no-llm
+
+# Compare run B with run A (paired bootstrap on nDCG@5), threshold curve of one run
+.\.venv\Scripts\python.exe -m scripts.eval_retrieval compare baseline prefix
+.\.venv\Scripts\python.exe -m scripts.eval_retrieval curve baseline
+
+# Authoring helpers: list sections and chunk ids; unlabelled sections in the top 10
+.\.venv\Scripts\python.exe -m scripts.eval_retrieval sections --paper maira_2
+.\.venv\Scripts\python.exe -m scripts.eval_retrieval pool baseline prefix
+
+# The bge_base config needs its own collection (the `papers` collection stays untouched)
+$env:EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
+.\.venv\Scripts\python.exe -m scripts.ingest --collection eval_bge-base-en-v1.5
+```
+
+| Config | Embedder | Collection | Query prefix | Rewrite |
+|---|---|---|---|---|
+| `baseline` | `bge-small-en-v1.5` | `papers` | none | on |
+| `no_rewrite` | `bge-small-en-v1.5` | `papers` | none | off |
+| `prefix` | `bge-small-en-v1.5` | `papers` | BGE instruction | on |
+| `bge_base` | `bge-base-en-v1.5` | `eval_bge-base-en-v1.5` | none | on |
+
+Where things live (all committed, none holds paper text):
+- `data/eval/golden.jsonl`: the questions and labels. `data/eval/CHANGELOG.md`: what
+  changed between versions.
+- `data/eval/rewrites.jsonl`: cached query rewrites. With `--no-llm` the runner reads
+  only this file, so a run is reproducible without Ollama. A missing rewrite is an
+  error.
+- `data/eval/runs/<name>.json`: one file per run. `data/eval/reports/*.md`: run
+  summaries, comparisons and threshold curves.
+
+Git is the source of truth for the golden set. An optional copy goes to LangSmith as
+the dataset `paperlens-retrieval-golden`:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.sync_golden                       # needs a clean, committed golden.jsonl
+.\.venv\Scripts\python.exe -m scripts.eval_retrieval run --config baseline --no-llm --langsmith
+```
+
+LangSmith setup, optional (the local run needs none of it):
+1. Create an account and an API key.
+2. Put `LANGSMITH_API_KEY=...` in `.env` (never commit it).
+3. On the EU region, also set `LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com`
+   (read by the LangSmith SDK).
+4. Run the two commands above. `--langsmith` also logs an experiment and checks that
+   its scores equal the local run. Only questions, labels and scores are sent, never
+   paper text.
+
 ## Running locally (without Docker)
 
 **Requirements:** Qdrant and Ollama must be running locally.
@@ -167,12 +229,19 @@ LLM_PROVIDER=ollama
 QDRANT_URL=http://localhost:6333
 EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
 OLLAMA_NUM_CTX=8192
+# EMBEDDING_QUERY_PREFIX=   (optional, see below)
 ```
 
 - `EMBEDDING_MODEL`: the embedder for both ingest and queries. The vector size
   comes from the model. Ingest and the API must use the same value; the API logs
   a warning at startup if the indexed `embedding_model` differs. Changing it needs a
   re-ingest (done automatically, since ingest recreates a mismatched collection).
+- `EMBEDDING_QUERY_PREFIX`: optional text put in front of queries only, never in
+  front of documents, so changing it needs no re-ingest. Unset: `BAAI/bge-*` models get
+  `Represent this sentence for searching relevant passages: `, other models get none.
+  Set it (to an empty string to switch the prefix off) to override. A non-BGE model
+  with its own query instruction needs it set. It is a plain setting, not a secret
+  ([ADR-0025](docs/adr/0025-retrieval-defaults-after-eval.md)).
 - `OLLAMA_NUM_CTX`: context window sent to Ollama on every call, warmup included,
   so the model is not reloaded on the first query. It has to fit the retrieved chunks.
 
