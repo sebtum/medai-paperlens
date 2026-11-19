@@ -10,6 +10,9 @@ from sentence_transformers import CrossEncoder
 RERANKER_MAX_LENGTH = 512
 """Token limit per (query, passage) pair, the same for all candidate models."""
 
+DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+"""Default reranker (ADR-0026): small, about 1.7 s per request at depth 20."""
+
 _OFF_VALUES = frozenset({"", "none"})
 
 
@@ -57,10 +60,10 @@ class CrossEncoderReranker:
 def get_reranker_model_name() -> str | None:
     """Reranker model name from `RERANKER_MODEL`; `None` when the reranker is off.
 
-    Unset, empty and `none` (any case) all mean off. The default model is chosen
-    after the Phase 10 comparison, so until then the reranker is off by default.
+    Unset means `DEFAULT_RERANKER_MODEL` (ADR-0026). An empty value or `none` (any
+    case) switches the reranker off.
     """
-    value = os.getenv("RERANKER_MODEL", "").strip()
+    value = os.getenv("RERANKER_MODEL", DEFAULT_RERANKER_MODEL).strip()
     return None if value.lower() in _OFF_VALUES else value
 
 

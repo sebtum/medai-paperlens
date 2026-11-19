@@ -2,12 +2,11 @@
 
 ## Status
 
-Proposed (Phase 10 Execute, T7). The measurements below are final. The Decision section
-is **not filled yet: the owner decides** (see "OWNER DECISION PENDING"). When the owner
-decides, this ADR becomes Accepted (or Rejected if no reranker is adopted) and the ADR
-index gets its row. Applies the decision rule of ADR-0023 and the runner of ADR-0024.
+Accepted (2026-11-19, Phase 10 Execute, T7). The owner decided after reviewing the
+measurements below. Applies the decision rule of ADR-0023 and the runner of ADR-0024.
 Follows ADR-0025, which left the off-corpus refusal gap open and named a reranker score
-as one candidate signal.
+as one candidate signal. This ADR closes that question for now with "nothing adopted"
+(see Decision, point 4).
 
 ## Context
 
@@ -19,7 +18,7 @@ off-corpus questions (up to 0.84) overlap with those of on-corpus questions (ADR
 A **reranker** (a cross-encoder) reads the question and one passage together and gives a
 0 to 1 score. The retrieval step keeps its top 20 (or 40) dense hits, the reranker
 re-scores them, and the best 5 go to generation. The rerank step already exists in the
-app as its own workflow step (T8) and is **off by default** until this ADR decides.
+app as its own workflow step (T8); this ADR sets its default model.
 
 What was measured (T5, T6, T7). All numbers come from the committed runs in
 `data/eval/runs/` and the reports in `data/eval/reports/`: golden set v2, sha256
@@ -208,23 +207,41 @@ too) is the cost. Full curves: `data/eval/reports/gate-rerank_{minilm,bge,medcpt
 
 ## Decision
 
-**OWNER DECISION PENDING.** Nothing below is decided. The numbers above are the input.
-"No reranker" is a valid outcome.
+The app reranks with MiniLM, on 20 hits, reading the rewritten question, and adopts no
+refusal rule. The measurements above are the input; the choices are the owner's.
 
-| Field | Options | Owner decision |
-|---|---|---|
-| Time limit (reranker time per request, on the owner's CPU) | seconds, set first | _to fill_ |
-| Adopt a reranker at all? | yes / no (no: `RERANKER_MODEL` stays off, only the numbers are recorded) | _to fill_ |
-| Model | MiniLM / bge / MedCPT (the rule's best result within the time limit) | _to fill_ |
-| Depth (hits the reranker sees) | 20 or 40 (retrieve fetches this many) | _to fill_ |
-| Query text the reranker reads | rewritten or original question | _to fill_ |
-| Refusal option | hard cut-off (below it the app answers "No relevant papers found.") / low-confidence label (the app still answers and shows "the papers may not cover this") / nothing (numbers in this ADR only) | _to fill_ |
-| If a cut-off or label: its value and model | one number, plus the stated uncertainty and the same-questions caveat above | _to fill_ |
-| Placement | own workflow step between retrieve and generate (implemented in T8; kept unless the owner objects) | _to fill_ |
-
-To fill after the decision: the setting values (`RERANKER_MODEL`, `RETRIEVE_DEPTH`,
-`RERANK_MIN_SCORE` or `RERANK_LOW_SCORE` if any), the default change in `.env.example`
-and Compose, and whether ADR-0027 (refusal signal) is needed (only for a hard cut-off).
+1. **Model: `cross-encoder/ms-marco-MiniLM-L-6-v2`** (revision `233902d`, the one seen in
+   T3). It is the only model that fits the time limit the owner set: under 2 s of added
+   time per request.
+   - Details: median 1656 ms, 90th percentile 1713 ms at depth 20 (reranker only, one
+     CPU-only machine). nDCG@5 0.684 against 0.564 for the dense default `prefix`, gain
+     +0.120 [+0.046, +0.199], the rule says B replaces A. bge cannot be told apart in
+     quality (+0.019 [-0.025, +0.076] against MiniLM) but takes 9.8 s. MedCPT is lower
+     (-0.045 [-0.090, -0.004] against MiniLM) and takes 8.9 s. Rejected:
+     bge-reranker-base and MedCPT (time; MedCPT also quality).
+2. **Depth: 20.** The retrieve step fetches 20 hits, the rerank step keeps the best 5.
+   Depth 40 is not adopted.
+   - Details: depth 40 gives +0.040 mean over depth 20 for MiniLM with a 95 % range of
+     [-0.003, +0.099], so the rule does not call it a real gain, and it doubles the
+     reranker time (median 3117 ms, 90th percentile 3438 ms). Possible later follow-up:
+     re-test depth 40 on a larger golden set. Recall among the hits the reranker can see
+     is 0.828 at depth 20 and 0.914 at depth 40.
+3. **Query text: the rewritten question.** This is the reference variant of every
+   comparison.
+   - Details: the original question was within noise for MiniLM, +0.015 [-0.005, +0.036]
+     (9 wins, 4 losses, 32 ties). Rejected: original question (no measured gain, and the
+     golden questions are clean sentences, so messy real input is untested).
+4. **Refusal: nothing adopted.** There is no hard cut-off and no low-confidence label.
+   The refusal numbers stay in this ADR as a record only. ADR-0027 is not written and
+   task T9 is skipped.
+   - Details: no model separates on-corpus from off-corpus questions. The area under the
+     curve is 0.80 for MiniLM (1.00 would be perfect). At t = 0.90 MiniLM refuses 16 of
+     20 off-corpus questions but also loses 16 of 45 on-corpus ones. A half-split check
+     gave a held-out off-corpus refusal of only 0.35 (MiniLM). A cut-off would be chosen
+     on the same 20 questions it is judged on. The better home for this is the real
+     grounding check planned for Phase 11.
+5. **Placement: its own workflow step** between retrieve and generate (implemented in T8).
+   Kept as built.
 
 ## Alternatives Considered
 
@@ -274,14 +291,36 @@ cuts to 5 when no model is set. Rejected in Discuss: reranking inside the retrie
 
 ## Consequences
 
-Not written. They depend on the choices above. Facts that hold whichever option is
-chosen:
+Each request gets better ranking and costs about 1.7 s more. The default changes: a
+fresh start now downloads and uses MiniLM.
 
-- The rerank step is already in the graph and the stream, off by default; leaving it off
-  changes nothing for users.
-- Any adopted model downloads on first use into the Hugging Face cache volume, and is
-  loaded lazily on the first request unless warm-up is added.
-- The eval keeps working for the dense setups; reranked runs carry `score_kind: rerank`.
+- **Added time.** About 1.7 s per request (median 1.66 s, 90th percentile 1.71 s,
+  reranker only). Against the roughly 7 s a request takes without reranking this is
+  +23 % (a lower bound: no end-to-end time with the real evidence prompt was measured).
+- **Download on first start.** 91 MB of weights from Hugging Face into the cache (in
+  Compose: the shared `huggingface_cache` volume). A first start without network needs
+  the model cached beforehand.
+- **Known consequence: lazy load.** The model is loaded on the first request, not at
+  startup, so the first request after a start pays the load time (4.1 s measured with
+  the files already cached, more with a download). No warm-up was decided. If the first
+  request matters, a startup warm-up is a possible follow-up.
+- **Switch off.** `RERANKER_MODEL` unset means MiniLM. An empty value or `none` (any
+  case) switches the step to a plain cut to the first 5 hits. The step and the stream
+  events stay the same either way (6 steps). Another model name in `RERANKER_MODEL`
+  also works.
+- **`confidence` stays cosine.** The `confidence` field of the response is still the
+  Qdrant cosine score of the top hit, not the reranker score. The reranker score is not
+  shown as confidence and is not used to refuse.
+- **No off-corpus refusal.** Off-corpus questions are answered as before (ADR-0025).
+  The 0.6 cosine threshold stays inert.
+- **Eval.** The eval keeps working for the dense setups; reranked runs carry
+  `score_kind: rerank`. The eval's named configs are unchanged.
+- **Golden-set caveats still apply to the gain numbers.** The set is LLM-labelled by
+  Claude, not human-verified, and the same author wrote the questions and the labels
+  (ADR-0023). 9 of the 159 labels were added in T6 from the top 5 of the reranked runs,
+  which can only help reranked runs. Measured effect: the pass moved the gains by -0.002
+  to +0.007 (MiniLM depth 20: 0.122 before, 0.120 after). Only 45 on-corpus questions,
+  one timed run per setup, no human check.
 
 ## Deliberately not decided
 
@@ -292,7 +331,8 @@ chosen:
 
 ## Follow-up
 
-- Fill the Decision section after the owner review and set the status.
-- If a refusal option other than "nothing" is chosen: ADR-0027 and the app change (T9).
-- Re-measure the chosen cut-off on new off-corpus questions, not the 20 used here.
+- Re-test depth 40 for MiniLM later, on a larger golden set (+0.040 [-0.003, +0.099] now).
+- Decide whether to add a startup warm-up for the reranker (open).
+- Refusal of off-corpus questions: take it up with the real grounding check in Phase 11,
+  and measure any cut-off on new off-corpus questions, not the 20 used here.
 - Optional: repeat the three timing runs to measure noise (one timed run each so far).

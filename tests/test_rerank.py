@@ -7,6 +7,7 @@ from conftest import FakeReranker
 
 from app.retrieval import rerank
 from app.retrieval.rerank import (
+    DEFAULT_RERANKER_MODEL,
     CrossEncoderReranker,
     Reranker,
     get_reranker,
@@ -94,9 +95,13 @@ def test_model_name_off_values(monkeypatch: pytest.MonkeyPatch, value: str) -> N
     assert get_reranker_model_name() is None
 
 
-def test_model_name_unset_is_off() -> None:
-    # The autouse fixture clears RERANKER_MODEL.
-    assert get_reranker_model_name() is None
+def test_model_name_unset_is_the_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The autouse fixture sets RERANKER_MODEL to "none"; clear it here.
+    monkeypatch.delenv("RERANKER_MODEL")
+    assert get_reranker_model_name() == DEFAULT_RERANKER_MODEL
+    assert DEFAULT_RERANKER_MODEL == "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 
 def test_model_name_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,6 +110,34 @@ def test_model_name_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # --- get_reranker ------------------------------------------------------------
+
+
+def test_get_reranker_unset_builds_the_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built: list[str] = []
+
+    def fake_cross_encoder(name: str, **kwargs: Any) -> _FakeCrossEncoder:
+        built.append(name)
+        return _FakeCrossEncoder()
+
+    monkeypatch.setattr(rerank, "CrossEncoder", fake_cross_encoder)
+    monkeypatch.delenv("RERANKER_MODEL")
+
+    reranker = get_reranker()
+
+    assert reranker is not None
+    assert reranker.model_name == DEFAULT_RERANKER_MODEL
+    assert built == [DEFAULT_RERANKER_MODEL]
+
+
+def test_get_reranker_unset_never_loads_a_real_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unset now means the default model; only the autouse block stops the download.
+    monkeypatch.delenv("RERANKER_MODEL")
+    with pytest.raises(AssertionError, match="FakeReranker"):
+        get_reranker()
 
 
 def test_get_reranker_off_returns_none_without_loading_a_model() -> None:

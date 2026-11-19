@@ -100,15 +100,15 @@ Run all reranker setups, label the hits they lift into the top 5 the same way as
   - [x] v2 frozen. All runs re-run on v2 (`--no-llm`). Dataset re-synced to LangSmith if a key is present, else noted.
 - Note: Done 2026-11-18. 13 runs on frozen v2 (65 questions, 159 labels, hash cc08395a...). 241 candidates read, 9 labels added, 232 rejected. Open for owner: q044 label blocked by a banned heading, q037 label is chunk-based, q064 judged off-corpus. Report: `3-execute-T6.md`.
 
-### [ ] T7: Comparisons and owner review → reranker ADR
+### [x] T7: Comparisons and owner review → reranker ADR
 Compare each reranker with today's default. Then Execute stops so the owner can see times and scores and decide.
 - Files: `data/eval/reports/*.md`, `docs/adr/0026-reranker.md`, `docs/phases/10-rerank-hybrid/3-execute-T7.md`
 - Depends on: T6 · Group: G5
 - Acceptance criteria:
-  - [ ] Each reranker against `prefix` with the decision rule (nDCG@5). Original versus rewritten query and depth 40 versus 20 for the leading model. A latency table. `curve --gate` for the leading model.
-  - [ ] **Owner review (planned stop):** the owner sets the time limit, then picks the model (the rule winner within the limit), the depth and the query text. For refusal the owner picks a hard cut-off, a low-confidence label, or nothing.
-  - [ ] ADR-0026 records every outcome with numbers and the LLM-labelled caveat, including "nothing adopted" if no model passes.
-- Note:
+  - [x] Each reranker against `prefix` with the decision rule (nDCG@5). Original versus rewritten query and depth 40 versus 20 for the leading model. A latency table. `curve --gate` for the leading model.
+  - [x] **Owner review (planned stop):** the owner sets the time limit, then picks the model (the rule winner within the limit), the depth and the query text. For refusal the owner picks a hard cut-off, a low-confidence label, or nothing.
+  - [x] ADR-0026 records every outcome with numbers and the LLM-labelled caveat, including "nothing adopted" if no model passes.
+- Note: Done 2026-11-19. Owner decisions: MiniLM, depth 20, rewritten query, no refusal option (time limit under 2 s). ADR-0026 Accepted. MiniLM is the app default (unset = MiniLM; empty or `none` = off). No startup warm-up (open, listed in the ADR). Report: `3-execute-T7.md`.
 
 ### [x] T8: Rerank step in the app
 A new workflow step between retrieve and generate. The UI shows it, and the citations event comes after it.
@@ -122,7 +122,7 @@ A new workflow step between retrieve and generate. The UI shows it, and the cita
   - [x] Tests: node unit tests (order, cut, fallback, off), stream order with 6 steps, and `get_reranker` overridden in every API test.
 - Note: Done 2026-11-18. Beyond the plan: `WorkflowState.rerank_fallback` and a `rerank_fallback` debug field; `build_workflow` takes the reranker as a required argument (`None` = off). Default model stays off until T7. Model loads lazily on the first request (no warm-up yet; decide after T7). Docker path not checked (Verify). Report: `3-execute-T8.md`.
 
-### [ ] T9: Refusal in the app (only if T7 picks a cut-off or a label)
+### [-] T9 (skipped): Refusal in the app (only if T7 picks a cut-off or a label)
 With a hard cut-off, the app answers "No relevant papers found." below the chosen reranker score, and `confidence` becomes the reranker score. With the label option, the app still answers, and the UI adds "the papers may not cover this".
 - Details, label option: `RERANK_LOW_SCORE` setting, a `low_confidence` debug flag, a UI note. No API contract change, so no new ADR; recorded in ADR-0026. The criteria below are for the hard cut-off.
 - Files: `app/workflow/rerank.py`, `app/models/query.py`, `ui/app.py`, `README.md`, `docs/adr/0027-refusal-signal.md`, tests
@@ -131,7 +131,7 @@ With a hard cut-off, the app answers "No relevant papers found." below the chose
   - [ ] `RERANK_MIN_SCORE` (server setting). The rerank node empties the citations when the top-1 score is below it, and generate's existing empty path answers.
   - [ ] `confidence` = reranker top-1. UI text and README API section updated. ADR-0027 amends ADR-0025 and the API contract.
   - [ ] Skipped with a one-line note if T7 picks nothing.
-- Note:
+- Note: Skipped 2026-11-19. The owner chose no refusal option at the T7 review. No ADR-0027. Refusal moves to the Phase 11 grounding check.
 
 ### [ ] T10: Hybrid search, eval only
 Score chunks by keywords as well, merge both lists, and test whether that plus the reranker beats the reranker alone.
