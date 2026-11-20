@@ -15,11 +15,14 @@ from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    Document,
     FieldCondition,
     Filter,
     FilterSelector,
     MatchValue,
+    Modifier,
     PointStruct,
+    SparseVectorParams,
     VectorParams,
 )
 from sentence_transformers import SentenceTransformer
@@ -31,6 +34,13 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "papers"
 BATCH_SIZE = 32
+
+# Hybrid layout (Phase 10, ADR-0028; eval only): a NAMED dense vector plus a sparse BM25
+# vector that Qdrant computes itself from a `Document`. The app's `papers` collection
+# keeps its single unnamed dense vector.
+DENSE_VECTOR_NAME = "dense"
+BM25_VECTOR_NAME = "bm25"
+BM25_MODEL = "qdrant/bm25"
 
 # Fixed namespace for point IDs: the same (paper_id, chunk_index) always maps to the
 # same ID, so re-ingesting overwrites rather than duplicates.
@@ -62,19 +72,33 @@ def _load_manifests(papers_dir: Path) -> list[tuple[str, dict[str, Any]]]:
 
 
 def _collection_is_stale(
-    client: QdrantClient, vector_dim: int, model_name: str, collection_name: str
+    client: QdrantClient,
+    vector_dim: int,
+    model_name: str,
+    collection_name: str,
+    hybrid: bool = False,
 ) -> str | None:
     """Why the existing collection can't be reused with this model, or `None`.
 
-    Checks the vector size, then one sampled point's `embedding_model`. A point without
-    that field comes from before Phase 8 (MiniLM, integer IDs), even if its size
-    happens to match.
+    Checks the layout (unnamed dense vector, or for `hybrid` the named `dense` vector
+    plus the sparse `bm25` vector), then the vector size, then one sampled point's
+    `embedding_model`. A point without that field comes from before Phase 8 (MiniLM,
+    integer IDs), even if its size happens to match.
     """
-    vectors = client.get_collection(collection_name).config.params.vectors
-    if not isinstance(vectors, VectorParams):
-        return "it uses named vectors"
-    if vectors.size != vector_dim:
-        return f"vector size {vectors.size} differs from the model's {vector_dim}"
+    params = client.get_collection(collection_name).config.params
+    vectors = params.vectors
+    if hybrid:
+        if not isinstance(vectors, dict) or DENSE_VECTOR_NAME not in vectors:
+            return f"it has no named dense vector {DENSE_VECTOR_NAME!r}"
+        if BM25_VECTOR_NAME not in (params.sparse_vectors or {}):
+            return f"it has no sparse vector {BM25_VECTOR_NAME!r}"
+        dense = vectors[DENSE_VECTOR_NAME]
+    else:
+        if not isinstance(vectors, VectorParams):
+            return "it uses named vectors"
+        dense = vectors
+    if dense.size != vector_dim:
+        return f"vector size {dense.size} differs from the model's {vector_dim}"
 
     sample, _ = client.scroll(
         collection_name, limit=1, with_payload=["embedding_model"], with_vectors=False
@@ -92,13 +116,14 @@ def _prepare_collection(
     model_name: str,
     overwrite: bool,
     collection_name: str,
+    hybrid: bool = False,
 ) -> None:
     existing = {c.name for c in client.get_collections().collections}
     if collection_name in existing:
         reason = "--overwrite requested" if overwrite else None
         if reason is None:
             reason = _collection_is_stale(
-                client, vector_dim, model_name, collection_name
+                client, vector_dim, model_name, collection_name, hybrid
             )
             if reason is not None:
                 logger.warning("Recreating collection %r: %s", collection_name, reason)
@@ -107,10 +132,35 @@ def _prepare_collection(
             existing.discard(collection_name)
 
     if collection_name not in existing:
-        client.create_collection(
-            collection_name=collection_name,
-            vectors_config=VectorParams(size=vector_dim, distance=Distance.COSINE),
-        )
+        if hybrid:
+            client.create_collection(
+                collection_name=collection_name,
+                vectors_config={
+                    DENSE_VECTOR_NAME: VectorParams(
+                        size=vector_dim, distance=Distance.COSINE
+                    )
+                },
+                sparse_vectors_config={
+                    BM25_VECTOR_NAME: SparseVectorParams(modifier=Modifier.IDF)
+                },
+            )
+        else:
+            client.create_collection(
+                collection_name=collection_name,
+                vectors_config=VectorParams(size=vector_dim, distance=Distance.COSINE),
+            )
+
+
+def _point_vector(
+    dense: list[float], embed_text: str, hybrid: bool
+) -> list[float] | dict[str, Any]:
+    """The point's vector: the dense list, or the named dense plus BM25 document."""
+    if not hybrid:
+        return dense
+    return {
+        DENSE_VECTOR_NAME: dense,
+        BM25_VECTOR_NAME: Document(text=embed_text, model=BM25_MODEL),
+    }
 
 
 def _delete_paper_points(
@@ -136,6 +186,7 @@ def ingest(
     overwrite: bool = False,
     tokenizer: BaseTokenizer | None = None,
     collection_name: str = COLLECTION_NAME,
+    hybrid: bool = False,
 ) -> int:
     """Chunk, embed and upsert every paper; return the number of chunks indexed.
 
@@ -145,14 +196,26 @@ def ingest(
     (`make_embedder_tokenizer`); it is a parameter so tests need no model download.
     `collection_name` selects the target collection (default `papers`); other
     collections, such as the per-embedder eval ones, are never touched.
+
+    `hybrid=True` (eval only, ADR-0028) writes the hybrid layout instead: a named dense
+    vector `dense` plus a sparse vector `bm25` (modifier IDF) that Qdrant computes from
+    a `Document` over the chunk's `embed_text` with the `qdrant/bm25` model and its
+    default options (the same options must be used at query time). Payloads and point
+    IDs are identical to the plain layout. It refuses the app collection `papers`.
     """
+    if hybrid and collection_name == COLLECTION_NAME:
+        raise ValueError(
+            f"hybrid ingestion is eval only; refusing to rebuild {COLLECTION_NAME!r}"
+        )
     papers = _load_manifests(papers_dir)
 
     vector_dim = model.get_sentence_embedding_dimension()
     if vector_dim is None:
         raise ValueError("embedding model does not report its vector dimension")
 
-    _prepare_collection(client, vector_dim, model_name, overwrite, collection_name)
+    _prepare_collection(
+        client, vector_dim, model_name, overwrite, collection_name, hybrid
+    )
 
     if not papers:
         return 0
@@ -181,7 +244,11 @@ def ingest(
             points = [
                 PointStruct(
                     id=point_id(paper_id, chunk.chunk_index),
-                    vector=embedding.tolist(),  # type: ignore[union-attr]
+                    vector=_point_vector(
+                        embedding.tolist(),  # type: ignore[union-attr]
+                        chunk.embed_text,
+                        hybrid,
+                    ),
                     payload={
                         "title": paper.get("title", ""),
                         "authors": paper.get("authors", []),

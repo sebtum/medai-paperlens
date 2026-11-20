@@ -75,7 +75,14 @@ def _reranker_lines(summary: RunSummary) -> list[str]:
     rows = [
         ["Reranker model", str(config.get("reranker", NOT_AVAILABLE))],
         ["Query text", str(config.get("rerank_query", NOT_AVAILABLE))],
-        ["Cosine pre-filter", _num(config.get("prefilter_threshold"), 2)],
+        [
+            (
+                "Cosine cut of the dense list (inside the hybrid query)"
+                if config.get("hybrid")
+                else "Cosine pre-filter"
+            ),
+            _num(config.get("prefilter_threshold"), 2),
+        ],
         ["Load time", f"{load:.1f} s" if isinstance(load, (int, float)) else "n/a"],
         ["Disk size", _megabytes(config.get("reranker_disk_bytes"))],
     ]
@@ -96,6 +103,31 @@ def _reranker_lines(summary: RunSummary) -> list[str]:
         _table(["Measure", "Value"], rows),
         "",
     ]
+
+
+def _hybrid_lines(summary: RunSummary) -> list[str]:
+    """Note for a hybrid run: what its scores are and what the dense list was cut at."""
+    config = summary.meta.config
+    if not config.get("hybrid"):
+        return []
+    lines = [
+        "## Hybrid search",
+        "",
+        "Hits come from one Qdrant query: a dense list (cosine at or above "
+        f"{_num(config.get('prefilter_threshold'), 2)}) and a BM25 keyword list, "
+        "merged by reciprocal rank fusion (RRF). The keyword query is the same "
+        "rewritten question without the dense instruction prefix.",
+        "",
+    ]
+    if summary.meta.score_kind == "rrf":
+        lines += [
+            "Scores are RRF values: rank-based, neither cosine nor BM25, and small "
+            "(they cannot be compared with the dense runs' cosine scores). The run is "
+            "not cut at 0.6; the cosine cut already applies to the dense list inside "
+            "the query. Treat the score as an order, not as a confidence.",
+            "",
+        ]
+    return lines
 
 
 def render_run_summary(summary: RunSummary) -> str:
@@ -158,6 +190,7 @@ def render_run_summary(summary: RunSummary) -> str:
             ],
         ),
         "",
+        *_hybrid_lines(summary),
         *_reranker_lines(summary),
         "## By question type (k=5)",
         "",

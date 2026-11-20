@@ -77,7 +77,12 @@ class Cutoff:
 PRIMARY_CUTOFF = Cutoff(k=5, threshold=0.6)
 
 RERANK_THRESHOLD = 0.0
-"""Default cut-off for a reranked run: no cut. The cosine pre-filter already ran."""
+"""Default cut-off for a run whose scores are not cosine: no cut.
+
+A reranked run already had its cosine pre-filter. A hybrid run (score kind ``rrf``) has
+rank-based fusion scores (about 0.01 to 0.03, RRF), so a cosine cut at 0.6 would drop
+every hit; its dense list was filtered at 0.6 inside the query instead.
+"""
 
 
 # --------------------------------------------------------------------------- run model
@@ -99,7 +104,10 @@ class RunMeta:
 
     @property
     def score_kind(self) -> str:
-        """What the hit scores mean: ``cosine`` or ``rerank``.
+        """What the hit scores mean: ``cosine``, ``rerank`` or ``rrf``.
+
+        ``rrf`` is the fused score of a hybrid run (reciprocal rank fusion): rank-based,
+        neither cosine nor BM25, so it is never cut at the cosine threshold.
 
         Runs written before Phase 10 have no ``score_kind`` in their config; they are
         cosine runs.
@@ -108,8 +116,13 @@ class RunMeta:
 
 
 def default_threshold(meta: RunMeta) -> float:
-    """Default cut-off threshold for a run: 0.6 for cosine scores, 0 for reranked."""
-    return RERANK_THRESHOLD if meta.score_kind == "rerank" else PRIMARY_CUTOFF.threshold
+    """Default cut-off threshold for a run: 0.6 for cosine scores, 0 for the others.
+
+    Reranked (``rerank``) and hybrid (``rrf``) runs are not cut: their scores are not
+    cosine values. An unknown score kind is treated as not cosine, so it is not cut at
+    0.6 by accident.
+    """
+    return PRIMARY_CUTOFF.threshold if meta.score_kind == "cosine" else RERANK_THRESHOLD
 
 
 @dataclass(frozen=True)
@@ -505,7 +518,7 @@ def summarize_run(
     """Everything the run summary report shows, at ``threshold``.
 
     Without ``threshold`` the cut-off follows the run's score kind
-    (``default_threshold``): 0.6 for cosine runs, 0 for reranked runs.
+    (``default_threshold``): 0.6 for cosine runs, 0 for reranked and hybrid runs.
     """
     if threshold is None:
         threshold = default_threshold(run.meta)

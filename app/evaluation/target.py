@@ -38,9 +38,9 @@ from app.evaluation.golden import GoldenEntry, QuestionType
 from app.evaluation.metrics import TABLE_CHUNK_TYPE, RankedHit
 from app.llm.base import LlmProvider, T
 from app.retrieval.embedding import EmbeddingProvider
-from app.retrieval.ingestion import point_id
+from app.retrieval.ingestion import BM25_VECTOR_NAME, DENSE_VECTOR_NAME, point_id
 from app.retrieval.rerank import Reranker, rerank_passage
-from app.retrieval.search import search_hits
+from app.retrieval.search import search_hits, search_hits_hybrid
 from app.workflow.rewrite import _PROMPT as REWRITE_PROMPT
 from app.workflow.rewrite import (
     REWRITE_CLEANUP_VERSION,
@@ -59,7 +59,7 @@ DEFAULT_PREFILTER_THRESHOLD = 0.6
 """Cosine pre-filter before the reranker; the same loose cut-off the app keeps."""
 
 RerankQuery = Literal["rewritten", "original"]
-ScoreKind = Literal["cosine", "rerank"]
+ScoreKind = Literal["cosine", "rerank", "rrf"]
 
 REWRITE_TEMPERATURE = 0
 REWRITE_SEED = 0
@@ -97,6 +97,12 @@ class RetrievalConfig:
     reranker the dense top-`depth` hits are first cut at `prefilter_threshold` (cosine),
     then re-scored against `rerank_query` ("rewritten": the query the embedder saw;
     "original": the golden question) and sorted by the reranker score.
+
+    `hybrid` (Phase 10, ADR-0028) searches a hybrid collection built by
+    `ingest(..., hybrid=True)`, with dense plus BM25 lists merged by RRF. The cosine
+    cut (`prefilter_threshold`) is then applied to the dense list inside the query,
+    because the fused scores are rank-based and cannot be cut at a cosine value; a
+    reranker sees the fused top-`depth` as they are.
     """
 
     embedder: str
@@ -108,6 +114,7 @@ class RetrievalConfig:
     reranker: str | None = None
     rerank_query: RerankQuery = "rewritten"
     prefilter_threshold: float = DEFAULT_PREFILTER_THRESHOLD
+    hybrid: bool = False
 
     def __post_init__(self) -> None:
         if self.depth < 1:
@@ -128,8 +135,14 @@ class RetrievalConfig:
 
     @property
     def score_kind(self) -> ScoreKind:
-        """What the hit scores mean: cosine similarity, or reranker output (0..1)."""
-        return "rerank" if self.reranker is not None else "cosine"
+        """What the hit scores mean.
+
+        `rerank`: reranker output (0..1). `rrf`: the fused score of a hybrid run without
+        a reranker (rank-based, small, neither cosine nor BM25). `cosine`: dense search.
+        """
+        if self.reranker is not None:
+            return "rerank"
+        return "rrf" if self.hybrid else "cosine"
 
 
 @dataclass(frozen=True)
@@ -439,6 +452,11 @@ async def retrieve_ranked(
     the dense order); `RankedHit.score` is then the reranker score. The reranker reads
     the rewritten query or the original question (`config.rerank_query`). The
     result's `rerank_ms` is the time the reranker took.
+
+    With `config.hybrid` the search is `search_hits_hybrid`: the dense list is cut at
+    `config.prefilter_threshold` inside the query, the BM25 list is not cut, and the
+    hits carry RRF scores. A reranker then re-scores the fused top-`depth` without a
+    further pre-filter.
     """
     if config.reranker is not None and reranker is None:
         raise ValueError(
@@ -454,17 +472,31 @@ async def retrieve_ranked(
         query = entry.question
 
     vector = await embedder.embed(config.prefix + query)
-    hits = await search_hits(
-        vector,
-        client,
-        top_k=config.depth,
-        score_threshold=NO_SCORE_THRESHOLD,
-        collection_name=config.collection,
-    )
+    if config.hybrid:
+        # BM25 reads the query without the dense instruction prefix (see
+        # `search_hits_hybrid`). The cosine cut sits on the dense list inside the query,
+        # so there is no second pre-filter here.
+        hits = await search_hits_hybrid(
+            vector,
+            query,
+            client,
+            top_k=config.depth,
+            dense_threshold=config.prefilter_threshold,
+            collection_name=config.collection,
+        )
+        candidates = hits
+    else:
+        hits = await search_hits(
+            vector,
+            client,
+            top_k=config.depth,
+            score_threshold=NO_SCORE_THRESHOLD,
+            collection_name=config.collection,
+        )
+        candidates = [h for h in hits if h.score >= config.prefilter_threshold]
     if config.reranker is None or reranker is None:
         return RankedResult(query=query, hits=hits)
 
-    candidates = [h for h in hits if h.score >= config.prefilter_threshold]
     rerank_text = entry.question if config.rerank_query == "original" else query
     rescored, rerank_ms = await rerank_hits(
         candidates, rerank_text, reranker, client=client, collection=config.collection
@@ -619,6 +651,28 @@ def preflight_problems(
     return problems
 
 
+def hybrid_layout_problems(collection: str, params: Any) -> list[str]:
+    """Why `collection` cannot serve a hybrid run (empty = it can).
+
+    A hybrid collection has the named dense vector `dense` and the sparse vector `bm25`.
+    The app's `papers` collection has an unnamed dense vector only.
+    """
+    vectors = getattr(params, "vectors", None)
+    sparse = getattr(params, "sparse_vectors", None) or {}
+    problems: list[str] = []
+    if not isinstance(vectors, dict) or DENSE_VECTOR_NAME not in vectors:
+        problems.append(
+            f"collection {collection!r} has no named dense vector "
+            f"{DENSE_VECTOR_NAME!r}; build it with ingest --hybrid"
+        )
+    if BM25_VECTOR_NAME not in sparse:
+        problems.append(
+            f"collection {collection!r} has no sparse vector {BM25_VECTOR_NAME!r}; "
+            "build it with ingest --hybrid"
+        )
+    return problems
+
+
 async def preflight(
     entries: Sequence[GoldenEntry],
     client: AsyncQdrantClient,
@@ -627,10 +681,19 @@ async def preflight(
     """Check the golden set against the target collection before any scoring.
 
     Raises one `PreflightError` listing all problems; otherwise returns the corpus index
-    (sections per paper with chunk ids, chunk count, chunk types).
+    (sections per paper with chunk ids, chunk count, chunk types). A hybrid config also
+    needs the hybrid layout (named dense vector plus sparse BM25 vector). The payload
+    checks (stale labels, `embedding_model`) work the same for both layouts: they read
+    payloads only.
     """
     index = await scan_collection(client, config.collection)
     problems = preflight_problems(entries, index, config.embedder)
+    if config.hybrid:
+        info = await client.get_collection(config.collection)
+        problems = [
+            *hybrid_layout_problems(config.collection, info.config.params),
+            *problems,
+        ]
     if problems:
         raise PreflightError(problems)
     return index

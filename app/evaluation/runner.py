@@ -10,7 +10,7 @@ LangSmith, git) comes in through `Services`, so tests need none of them.
   reranker loads it once, times the load, makes one warm-up call, then times one
   reranker call per question (Phase 10).
 - `compare_command`, `curve_command`: reports from stored runs only. Their default
-  cut-off follows each run's score kind (0.6 cosine, 0 reranked).
+  cut-off follows each run's score kind (0.6 cosine, 0 for rerank and rrf).
 - Failures raise (`EVAL_ERRORS` are the expected ones); nothing here swallows an error.
 - No paper text is written anywhere: chunk text is read into memory for the token
   estimate and the n-gram probe only.
@@ -113,6 +113,8 @@ DEFAULT_REWRITES = REPO_ROOT / DEFAULT_REWRITES_PATH
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 BGE_BASE_MODEL = "BAAI/bge-base-en-v1.5"
 BGE_BASE_COLLECTION = "eval_bge-base-en-v1.5"
+HYBRID_COLLECTION = "eval_hybrid"
+"""Eval-only collection with the hybrid layout (`ingest --hybrid`)."""
 
 RERANKER_MODELS: dict[str, str] = {
     "minilm": "cross-encoder/ms-marco-MiniLM-L-6-v2",
@@ -153,6 +155,7 @@ class ConfigSpec:
     prefix: str = ""
     rewrite: bool = True
     reranker: str | None = None
+    hybrid: bool = False
 
 
 NAMED_CONFIGS: dict[str, ConfigSpec] = {
@@ -180,6 +183,22 @@ NAMED_CONFIGS: dict[str, ConfigSpec] = {
         COLLECTION_NAME,
         prefix=BGE_QUERY_PREFIX,
         reranker=RERANKER_MODELS["medcpt"],
+    ),
+    # Hybrid search (Phase 10, ADR-0028): dense plus BM25 merged by RRF, on the
+    # collection `eval_hybrid`. `hybrid` is measured only; `hybrid_rerank` adds the
+    # adopted reranker (MiniLM, depth 20, rewritten query) and is the decision run.
+    "hybrid": ConfigSpec(
+        DEFAULT_EMBEDDING_MODEL,
+        HYBRID_COLLECTION,
+        prefix=BGE_QUERY_PREFIX,
+        hybrid=True,
+    ),
+    "hybrid_rerank": ConfigSpec(
+        DEFAULT_EMBEDDING_MODEL,
+        HYBRID_COLLECTION,
+        prefix=BGE_QUERY_PREFIX,
+        reranker=RERANKER_MODELS["minilm"],
+        hybrid=True,
     ),
 }
 
@@ -387,6 +406,10 @@ def _config_dict(
         "score_kind": config.score_kind,
         "reranker": config.reranker,
     }
+    if config.hybrid:
+        data["hybrid"] = True
+        data["prefilter_threshold"] = config.prefilter_threshold
+        data["fusion"] = "rrf"
     if config.reranker is not None:
         data["rerank_query"] = config.rerank_query
         data["prefilter_threshold"] = config.prefilter_threshold
@@ -667,6 +690,7 @@ def make_run_options(
         reranker=model,
         rerank_query=rerank_query or "rewritten",
         prefilter_threshold=DEFAULT_PREFILTER_THRESHOLD,
+        hybrid=spec.hybrid,
     )
     return RunOptions(
         name=name or config_name,
@@ -708,8 +732,8 @@ def compare_command(
     """Compare run B against run A; write the report, return the verdict lines.
 
     Without `threshold`, each run is cut at the default for its score kind: 0.6 for
-    cosine runs, 0 for reranked runs (the cosine pre-filter already ran). `threshold`
-    sets both sides, `threshold_b` overrides B.
+    cosine runs, 0 for reranked and hybrid runs (their scores are not cosine).
+    `threshold` sets both sides, `threshold_b` overrides B.
     """
     entries = load_golden(golden_path)
     sha256 = golden_sha256(golden_path)

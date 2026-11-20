@@ -56,6 +56,7 @@ from tests.test_eval_target import (
     REWRITER,
     FakeAsyncQdrant,
     FakeEmbedder,
+    HybridFakeQdrant,
     RecordingLlm,
     make_entry,
     make_point,
@@ -347,6 +348,8 @@ class TestNamedConfigs:
             "rerank_minilm",
             "rerank_bge",
             "rerank_medcpt",
+            "hybrid",
+            "hybrid_rerank",
         }
 
     def test_baseline_is_bge_small_without_prefix_and_with_rewrite(self) -> None:
@@ -1632,3 +1635,253 @@ class TestPoolAdjudicated:
         assert code == 1
         assert "q999" in caplog.text
         assert not adjudicated.exists()
+
+
+# ---------------------------------------------------------------------------
+# Hybrid configs and runs (Phase 10, T10)
+# ---------------------------------------------------------------------------
+
+
+def hybrid_points() -> list[SimpleNamespace]:
+    """A fused list in RRF scores (tiny, rank-based), best first."""
+    return [
+        make_point("maira_2", "Results", 0, text=TEXT_A, score=0.0328),
+        make_point("maira_2", "Methods", 1, text=TEXT_B, score=0.0161),
+        make_point(
+            "conch",
+            "Results > Table 2",
+            0,
+            chunk_type="table",
+            text=TEXT_C,
+            score=0.0159,
+        ),
+    ]
+
+
+class HybridHarness(RerankHarness):
+    """`RerankHarness` over a fake hybrid collection."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        super().__init__(tmp_path)
+        self.qdrant = HybridFakeQdrant(hybrid_points())  # type: ignore[assignment]
+
+
+@pytest.fixture
+def hybrid_harness(tmp_path: Path) -> HybridHarness:
+    return HybridHarness(tmp_path)
+
+
+class TestHybridConfigs:
+    def test_hybrid_is_built_on_prefix_with_its_own_collection(self) -> None:
+        prefix = runner.NAMED_CONFIGS["prefix"]
+        spec = runner.NAMED_CONFIGS["hybrid"]
+        assert spec.hybrid is True
+        assert spec.reranker is None
+        assert spec.collection == "eval_hybrid" == runner.HYBRID_COLLECTION
+        assert spec.embedder == prefix.embedder
+        assert spec.prefix == prefix.prefix
+        assert spec.rewrite is prefix.rewrite
+
+    def test_hybrid_rerank_adds_the_adopted_minilm_reranker(self) -> None:
+        spec = runner.NAMED_CONFIGS["hybrid_rerank"]
+        minilm = runner.NAMED_CONFIGS["rerank_minilm"]
+        assert spec.hybrid is True
+        assert (
+            spec.reranker == minilm.reranker == ("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        )
+        assert spec.collection == "eval_hybrid"
+        assert spec.prefix == minilm.prefix
+
+    def test_no_other_named_config_is_hybrid(self) -> None:
+        hybrids = {n for n, s in runner.NAMED_CONFIGS.items() if s.hybrid}
+        assert hybrids == {"hybrid", "hybrid_rerank"}
+
+    def test_options_resolve_with_the_plan_defaults(self) -> None:
+        hybrid = runner.make_run_options("hybrid", rewrite_model="m").config
+        assert hybrid.hybrid is True
+        assert hybrid.score_kind == "rrf"
+        assert hybrid.depth == 20
+        assert hybrid.prefilter_threshold == 0.6
+        assert hybrid.reranker is None
+
+        both = runner.make_run_options("hybrid_rerank", rewrite_model="m").config
+        assert both.hybrid is True
+        assert both.score_kind == "rerank"
+        assert both.rerank_query == "rewritten"
+        assert both.depth == 20
+
+    def test_dense_options_stay_not_hybrid(self) -> None:
+        for name in ("baseline", "prefix", "rerank_minilm"):
+            assert (
+                runner.make_run_options(name, rewrite_model="m").config.hybrid is False
+            )
+
+
+class TestHybridRun:
+    def test_hybrid_run_is_marked_rrf_and_uses_one_fused_query(
+        self, hybrid_harness: HybridHarness
+    ) -> None:
+        assert hybrid_harness.run(config="hybrid") == 0
+
+        record = load_run(hybrid_harness.runs / "hybrid.json")
+        config = record.meta.config
+        assert config["score_kind"] == "rrf"
+        assert config["hybrid"] is True
+        assert config["fusion"] == "rrf"
+        assert config["collection"] == "eval_hybrid"
+        assert config["prefilter_threshold"] == 0.6
+        assert config["reranker"] is None
+        assert record.meta.score_kind == "rrf"
+        for question in record.questions:
+            assert [(h.section, h.score) for h in question.hits] == [
+                ("Results", 0.0328),
+                ("Methods", 0.0161),
+                ("Results > Table 2", 0.0159),
+            ]
+            assert question.rerank_ms is None
+        assert hybrid_harness.reranker_loads == []
+        assert all("prefetch" in c for c in hybrid_harness.qdrant.query_calls)
+
+    def test_hybrid_report_is_honest_about_the_score_kind(
+        self, hybrid_harness: HybridHarness
+    ) -> None:
+        assert hybrid_harness.run(config="hybrid") == 0
+
+        report = (hybrid_harness.reports / "run-hybrid.md").read_text(encoding="utf-8")
+        assert "Score kind: rrf; threshold: 0.00" in report
+        assert "## Hybrid search" in report
+        assert "rank-based, neither cosine nor BM25" in report
+        assert "not cut at 0.6" in report
+        assert "## Reranker" not in report
+        # Nothing was lost to a 0.6 cut: the on-corpus questions have hits.
+        assert "Score kind: cosine" not in report
+
+    def test_hybrid_rerank_run_records_rerank_scores_and_the_dense_cut(
+        self, hybrid_harness: HybridHarness
+    ) -> None:
+        assert hybrid_harness.run(config="hybrid_rerank") == 0
+
+        record = load_run(hybrid_harness.runs / "hybrid_rerank.json")
+        config = record.meta.config
+        assert config["score_kind"] == "rerank"
+        assert config["hybrid"] is True
+        assert config["reranker"] == "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        assert config["rerank_query"] == "rewritten"
+        for question in record.questions:
+            assert [(h.section, h.score) for h in question.hits] == [
+                ("Results > Table 2", 0.9),
+                ("Results", 0.5),
+                ("Methods", 0.2),
+            ]
+            assert question.rerank_ms is not None
+        assert hybrid_harness.reranker_loads == ["cross-encoder/ms-marco-MiniLM-L-6-v2"]
+        report = (hybrid_harness.reports / "run-hybrid_rerank.md").read_text(
+            encoding="utf-8"
+        )
+        assert "Cosine cut of the dense list (inside the hybrid query)" in report
+        assert "Score kind: rerank; threshold: 0.00" in report
+
+    def test_a_plain_collection_fails_the_preflight_with_a_clear_message(
+        self,
+        hybrid_harness: HybridHarness,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        hybrid_harness.qdrant.params = SimpleNamespace(
+            vectors=SimpleNamespace(size=384), sparse_vectors=None
+        )
+        with caplog.at_level(logging.ERROR):
+            code = hybrid_harness.run(config="hybrid")
+        assert code == 1
+        assert "ingest --hybrid" in caplog.text
+        assert not hybrid_harness.runs.exists()
+
+
+class TestScoreKindHandling:
+    @staticmethod
+    def rrf_record(entries: Sequence[GoldenEntry], sha: str, name: str) -> RunRecord:
+        hits = (
+            RankedHit("maira_2", "Results", 0, "text", 0.0328),
+            RankedHit("maira_2", "Methods", 1, "text", 0.0161),
+        )
+        return RunRecord(
+            meta=RunMeta(
+                name=name,
+                config={"score_kind": "rrf", "hybrid": True},
+                golden_sha256=sha,
+                git_hash="g",
+                chunk_count=4,
+            ),
+            questions=tuple(QuestionRun(e.id, e.type, hits) for e in entries),
+        )
+
+    def test_compare_does_not_cut_an_rrf_run_at_0_6(self, harness: Harness) -> None:
+        sha = golden_sha256(harness.golden)
+        save_run(make_record(harness.entries, sha, "a"), harness.runs / "a.json")
+        save_run(self.rrf_record(harness.entries, sha, "h"), harness.runs / "h.json")
+
+        code = cli_main(
+            ["compare", "a", "h", *harness.paths(), "--resamples", "50"],
+            services=harness.services(),
+        )
+
+        assert code == 0
+        report = (harness.reports / "compare-h-vs-a.md").read_text(encoding="utf-8")
+        assert "A at k=5, t=0.60, B at k=5, t=0.00" in report
+
+    def test_run_summary_of_an_rrf_run_has_no_empty_on_corpus_questions(
+        self, harness: Harness
+    ) -> None:
+        sha = golden_sha256(harness.golden)
+        record = self.rrf_record(harness.entries, sha, "h")
+        from app.evaluation.compare import summarize_run
+
+        summary = summarize_run(record, harness.entries)
+        assert summary.threshold == 0.0
+        assert summary.empty_rate_on_corpus == 0.0
+
+    def test_pool_cuts_each_run_at_its_own_default(self) -> None:
+        entries = [golden_entries()[0]]
+        cosine = make_record(entries, name="dense")
+        rrf = self.rrf_record(entries, "x" * 64, "hybrid")
+
+        pools = authoring.pool_candidates([cosine, rrf], entries, k=10)
+
+        by_section = {c.section: c for c in pools["q001"]}
+        # The RRF run is not cut at 0.4, so its Methods hit is pooled; the cosine
+        # run's 0.3 hit is below its own 0.4 cut.
+        assert by_section["Methods"].runs == {"dense", "hybrid"}
+        assert "Introduction" not in by_section
+
+    def test_pool_threshold_overrides_every_run(self) -> None:
+        entries = [golden_entries()[0]]
+        rrf = self.rrf_record(entries, "x" * 64, "hybrid")
+
+        pools = authoring.pool_candidates([rrf], entries, k=10, threshold=0.4)
+
+        assert pools["q001"] == []  # everything is below an explicit 0.4
+
+    def test_pool_header_names_the_cut_of_each_run_when_they_differ(self) -> None:
+        entries = [golden_entries()[0]]
+        runs = [
+            make_record(entries, name="dense"),
+            self.rrf_record(entries, "x" * 64, "hybrid"),
+        ]
+        pools = authoring.pool_candidates(runs, entries, k=5)
+
+        text = authoring.render_pool(pools, entries, runs, k=5)
+
+        assert "t=0.40 (dense), t=0.00 (hybrid)" in text
+
+    def test_gate_report_of_an_rrf_run_names_the_score_kind(
+        self, harness: Harness
+    ) -> None:
+        sha = golden_sha256(harness.golden)
+        save_run(self.rrf_record(harness.entries, sha, "h"), harness.runs / "h.json")
+
+        code = cli_main(
+            ["curve", "h", "--gate", *harness.paths()], services=harness.services()
+        )
+
+        assert code == 0
+        report = (harness.reports / "gate-h.md").read_text(encoding="utf-8")
+        assert "Score kind: rrf" in report

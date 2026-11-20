@@ -153,7 +153,7 @@ def _add_reports(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> No
         "--threshold",
         type=float,
         help="Cut-off for both runs (default: 0.6 for cosine runs, 0 for reranked "
-        "runs).",
+        "and hybrid runs).",
     )
     compare.add_argument(
         "--threshold-b",
@@ -200,7 +200,13 @@ def _add_authoring(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> 
     _common(pool)
     pool.add_argument("runs", nargs="+", metavar="RUN", help="Run names or files.")
     pool.add_argument("--k", type=int, default=POOL_DEFAULT_K)
-    pool.add_argument("--threshold", type=float, default=POOL_DEFAULT_THRESHOLD)
+    pool.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help=f"Score cut-off for every run (default: {POOL_DEFAULT_THRESHOLD} for "
+        "cosine runs, 0 for reranked and hybrid runs, whose scores are not cosine).",
+    )
     pool.add_argument(
         "--include-off-corpus",
         action="store_true",

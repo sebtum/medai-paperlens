@@ -535,6 +535,12 @@ def test_reranked_run_defaults_to_no_cut() -> None:
     assert default_threshold(_meta(score_kind="cosine")) == 0.6
 
 
+def test_hybrid_run_is_not_cut_at_the_cosine_threshold() -> None:
+    # RRF scores are rank-based (about 0.01 to 0.03): a cosine cut would empty the run.
+    assert default_threshold(_meta(score_kind="rrf")) == 0.0
+    assert default_threshold(_meta(score_kind="something-new")) == 0.0
+
+
 def test_rerank_ms_roundtrips_and_is_omitted_when_absent(tmp_path: Path) -> None:
     golden = _golden({F: 1, OFF: 1})
     timed = _rerank_run(

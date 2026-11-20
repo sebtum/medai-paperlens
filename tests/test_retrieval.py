@@ -17,8 +17,12 @@ from qdrant_client.models import (
     CollectionDescription,
     CollectionsResponse,
     Distance,
+    Document,
     FilterSelector,
+    FusionQuery,
+    Modifier,
     PointStruct,
+    SparseVectorParams,
     VectorParams,
 )
 
@@ -37,7 +41,7 @@ from app.retrieval.embedding import (
 )
 from app.retrieval.ingestion import COLLECTION_NAME, ingest, point_id
 from app.retrieval.rerank import get_reranker
-from app.retrieval.search import search, search_hits
+from app.retrieval.search import search, search_hits, search_hits_hybrid
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -199,7 +203,8 @@ class FakeQdrant:
     """In-memory stand-in for the parts of `QdrantClient` that ingestion uses."""
 
     def __init__(self) -> None:
-        self.collections: dict[str, VectorParams] = {}
+        self.collections: dict[str, Any] = {}
+        self.sparse: dict[str, dict[str, SparseVectorParams] | None] = {}
         self.points: dict[str, PointStruct] = {}
         self.calls: list[str] = []
 
@@ -209,19 +214,26 @@ class FakeQdrant:
         )
 
     def create_collection(
-        self, collection_name: str, vectors_config: VectorParams
+        self,
+        collection_name: str,
+        vectors_config: Any,
+        sparse_vectors_config: dict[str, SparseVectorParams] | None = None,
     ) -> None:
         self.calls.append("create_collection")
         self.collections[collection_name] = vectors_config
+        self.sparse[collection_name] = sparse_vectors_config
 
     def delete_collection(self, collection_name: str) -> None:
         self.calls.append("delete_collection")
         self.collections.pop(collection_name)
+        self.sparse.pop(collection_name, None)
         self.points.clear()
 
     def get_collection(self, collection_name: str) -> SimpleNamespace:
         vectors = self.collections[collection_name]
-        params = SimpleNamespace(vectors=vectors)
+        params = SimpleNamespace(
+            vectors=vectors, sparse_vectors=self.sparse.get(collection_name)
+        )
         return SimpleNamespace(config=SimpleNamespace(params=params))
 
     def scroll(
@@ -601,10 +613,15 @@ class RecordingQdrant(FakeQdrant):
         self.touched: list[tuple[str, str]] = []
 
     def create_collection(
-        self, collection_name: str, vectors_config: VectorParams
+        self,
+        collection_name: str,
+        vectors_config: Any,
+        sparse_vectors_config: dict[str, SparseVectorParams] | None = None,
     ) -> None:
         self.touched.append(("create_collection", collection_name))
-        super().create_collection(collection_name, vectors_config)
+        super().create_collection(
+            collection_name, vectors_config, sparse_vectors_config
+        )
 
     def delete_collection(self, collection_name: str) -> None:
         self.touched.append(("delete_collection", collection_name))
@@ -719,6 +736,194 @@ class TestIngestCollectionName:
         assert ("create_collection", self.EVAL) in client.touched
         assert COLLECTION_NAME in client.collections
         assert all(name == self.EVAL for _, name in client.touched)
+
+
+class TestIngestHybrid:
+    """`ingest(..., hybrid=True)` (Phase 10, eval only): dense plus BM25 layout."""
+
+    EVAL = "eval_hybrid"
+
+    def _write_paper(self, tmp_path: Path) -> None:
+        paper = {
+            "title": "Test Paper",
+            "authors": ["Author A"],
+            "year": 2024,
+            "doi": "10.test/123",
+            "abstract": "A test abstract about AI in medicine.",
+        }
+        (tmp_path / "paper.json").write_text(json.dumps(paper))
+
+    def _ingest(
+        self,
+        tmp_path: Path,
+        client: RecordingQdrant,
+        model: MagicMock,
+        **kwargs: Any,
+    ) -> int:
+        kwargs.setdefault("collection_name", self.EVAL)
+        return ingest(
+            tmp_path,
+            client,  # type: ignore[arg-type]
+            model,
+            model_name=MODEL_NAME,
+            tokenizer=WhitespaceTokenizer(max_tokens=200),
+            **kwargs,
+        )
+
+    def test_collection_has_a_named_dense_vector_and_a_sparse_bm25_vector(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+
+        self._ingest(tmp_path, client, ingest_model, hybrid=True)
+
+        dense = client.collections[self.EVAL]
+        assert set(dense) == {"dense"}
+        assert dense["dense"].size == TEST_VECTOR_DIM
+        assert dense["dense"].distance == Distance.COSINE
+        sparse = client.sparse[self.EVAL]
+        assert sparse is not None and set(sparse) == {"bm25"}
+        assert sparse["bm25"].modifier == Modifier.IDF
+
+    def test_points_carry_the_dense_vector_and_a_bm25_document_of_embed_text(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+
+        count = self._ingest(tmp_path, client, ingest_model, hybrid=True)
+
+        embedded = [
+            text for call in ingest_model.encode.call_args_list for text in call[0][0]
+        ]
+        assert count == len(client.points) == len(embedded) == 1
+        (point,) = client.points.values()
+        assert isinstance(point.vector, dict)
+        assert set(point.vector) == {"dense", "bm25"}
+        assert point.vector["dense"] == [0.0] * TEST_VECTOR_DIM
+        document = point.vector["bm25"]
+        assert isinstance(document, Document)
+        assert document.model == "qdrant/bm25"
+        assert document.text == embedded[0]  # the same text the dense side embedded
+        assert document.options is None  # default options, also at query time
+
+    def test_payloads_and_ids_equal_the_plain_layout(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        plain, hybrid = RecordingQdrant(), RecordingQdrant()
+
+        self._ingest(tmp_path, plain, ingest_model, collection_name="eval_plain")
+        self._ingest(tmp_path, hybrid, ingest_model, hybrid=True)
+
+        assert set(plain.points) == set(hybrid.points)
+        for pid, point in plain.points.items():
+            assert hybrid.points[pid].payload == point.payload
+        assert isinstance(next(iter(plain.points.values())).vector, list)
+
+    def test_papers_is_never_written_in_the_hybrid_layout(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+
+        with pytest.raises(ValueError, match="eval only"):
+            self._ingest(
+                tmp_path,
+                client,
+                ingest_model,
+                hybrid=True,
+                collection_name=COLLECTION_NAME,
+            )
+        assert client.touched == []
+
+    def test_only_the_eval_collection_is_touched(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+        client.collections[COLLECTION_NAME] = VectorParams(
+            size=TEST_VECTOR_DIM, distance=Distance.COSINE
+        )
+
+        self._ingest(tmp_path, client, ingest_model, hybrid=True, overwrite=True)
+
+        assert {name for _, name in client.touched} == {self.EVAL}
+        assert isinstance(client.collections[COLLECTION_NAME], VectorParams)
+
+    def test_a_matching_hybrid_collection_is_reused_not_recreated(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+        self._ingest(tmp_path, client, ingest_model, hybrid=True)
+        client.touched.clear()
+
+        self._ingest(tmp_path, client, ingest_model, hybrid=True)
+
+        assert ("delete_collection", self.EVAL) not in client.touched
+        assert ("create_collection", self.EVAL) not in client.touched
+        assert len(client.points) == 1
+
+    def test_another_embedding_model_recreates_the_hybrid_collection(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+        self._ingest(tmp_path, client, ingest_model, hybrid=True)
+        for point in client.points.values():
+            assert point.payload is not None
+            point.payload["embedding_model"] = "other/embedder"
+        client.touched.clear()
+
+        self._ingest(tmp_path, client, ingest_model, hybrid=True)
+
+        assert ("delete_collection", self.EVAL) in client.touched
+        assert ("create_collection", self.EVAL) in client.touched
+        assert client.sparse[self.EVAL] is not None
+
+    def test_a_plain_layout_collection_is_recreated_as_hybrid(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+        client.collections[self.EVAL] = VectorParams(
+            size=TEST_VECTOR_DIM, distance=Distance.COSINE
+        )
+
+        self._ingest(tmp_path, client, ingest_model, hybrid=True)
+
+        assert ("delete_collection", self.EVAL) in client.touched
+        assert set(client.collections[self.EVAL]) == {"dense"}
+
+    def test_a_hybrid_collection_without_the_sparse_vector_is_recreated(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+        client.collections[self.EVAL] = {
+            "dense": VectorParams(size=TEST_VECTOR_DIM, distance=Distance.COSINE)
+        }
+
+        self._ingest(tmp_path, client, ingest_model, hybrid=True)
+
+        assert ("delete_collection", self.EVAL) in client.touched
+        assert client.sparse[self.EVAL] is not None
+
+    def test_a_plain_ingest_recreates_a_hybrid_collection(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+        self._ingest(tmp_path, client, ingest_model, hybrid=True)
+        client.touched.clear()
+
+        self._ingest(tmp_path, client, ingest_model)
+
+        assert ("delete_collection", self.EVAL) in client.touched
+        assert isinstance(client.collections[self.EVAL], VectorParams)
+        assert isinstance(next(iter(client.points.values())).vector, list)
 
 
 # ---------------------------------------------------------------------------
@@ -1009,6 +1214,109 @@ class TestSearchHits:
 # ---------------------------------------------------------------------------
 # TestQueryRoute
 # ---------------------------------------------------------------------------
+
+
+class TestSearchHitsHybrid:
+    def _point(self, payload: dict, score: float, point_id: int = 0) -> MagicMock:
+        point = MagicMock()
+        point.payload = payload
+        point.score = score
+        point.id = point_id
+        return point
+
+    def _payload(self, **overrides: object) -> dict:
+        return {
+            "paper_id": "p1",
+            "section": "Methods",
+            "chunk_index": 3,
+            "chunk_type": "table",
+            **overrides,
+        }
+
+    async def _search(self, client: AsyncMock, **kwargs: Any) -> list[RankedHit]:
+        params: dict[str, Any] = {
+            "top_k": 20,
+            "dense_threshold": 0.6,
+            "collection_name": "eval_hybrid",
+        }
+        params.update(kwargs)
+        return await search_hits_hybrid(
+            np.ones(TEST_VECTOR_DIM, dtype=np.float32),
+            "bare query text",
+            client,
+            **params,
+        )
+
+    async def test_one_query_with_a_dense_and_a_bm25_prefetch_fused_by_rrf(
+        self, async_qdrant: AsyncMock
+    ) -> None:
+        await self._search(async_qdrant)
+
+        async_qdrant.query_points.assert_awaited_once()
+        kwargs = async_qdrant.query_points.call_args.kwargs
+        assert kwargs["collection_name"] == "eval_hybrid"
+        assert kwargs["limit"] == 20
+        assert kwargs["with_payload"] is True
+        assert kwargs["query"] == FusionQuery(fusion="rrf")
+        dense, bm25 = kwargs["prefetch"]
+        assert dense.using == "dense"
+        assert dense.limit == 20
+        assert dense.score_threshold == 0.6
+        assert dense.query == [1.0] * TEST_VECTOR_DIM
+        assert bm25.using == "bm25"
+        assert bm25.limit == 20
+        assert bm25.score_threshold is None  # no cosine cut on the keyword list
+        assert bm25.query == Document(text="bare query text", model="qdrant/bm25")
+        assert bm25.query.options is None
+
+    async def test_prefetch_limit_defaults_to_top_k_and_can_differ(
+        self, async_qdrant: AsyncMock
+    ) -> None:
+        await self._search(async_qdrant, top_k=5)
+        first = async_qdrant.query_points.call_args.kwargs
+        assert [p.limit for p in first["prefetch"]] == [5, 5]
+
+        await self._search(async_qdrant, top_k=5, prefetch_limit=20)
+        second = async_qdrant.query_points.call_args.kwargs
+        assert second["limit"] == 5
+        assert [p.limit for p in second["prefetch"]] == [20, 20]
+
+    async def test_has_no_default_collection(self, async_qdrant: AsyncMock) -> None:
+        with pytest.raises(TypeError):
+            await search_hits_hybrid(  # type: ignore[call-arg]
+                np.zeros(TEST_VECTOR_DIM, dtype=np.float32),
+                "q",
+                async_qdrant,
+                top_k=20,
+                dense_threshold=0.6,
+            )
+
+    async def test_returns_ranked_hits_with_chunk_type_and_the_fused_score(
+        self, async_qdrant: AsyncMock
+    ) -> None:
+        async_qdrant.query_points.return_value.points = [
+            self._point(self._payload(), 0.0328),
+            self._point(self._payload(paper_id="p2", chunk_type=None), 0.0161, 1),
+        ]
+
+        hits = await self._search(async_qdrant)
+
+        assert hits == [
+            RankedHit("p1", "Methods", 3, "table", 0.0328),
+            RankedHit("p2", "Methods", 3, "text", 0.0161),
+        ]
+
+    async def test_a_point_without_chunk_identity_is_skipped(
+        self, async_qdrant: AsyncMock
+    ) -> None:
+        async_qdrant.query_points.return_value.points = [
+            self._point(self._payload(section=None), 0.03),
+            self._point(self._payload(), 0.02, 1),
+        ]
+
+        hits = await self._search(async_qdrant)
+
+        assert [h.paper_id for h in hits] == ["p1"]
 
 
 class TestQueryRoute:

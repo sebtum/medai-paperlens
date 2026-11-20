@@ -45,6 +45,15 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--hybrid",
+        action="store_true",
+        help=(
+            "Eval only (ADR-0028): write a named dense vector plus a sparse BM25 "
+            "vector computed by Qdrant. Needs a non-default --collection, e.g. "
+            "eval_hybrid; the app collection is never written this way."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Drop and recreate the collection before ingesting.",
@@ -54,6 +63,13 @@ if __name__ == "__main__":
     papers_dir = Path(args.papers_dir)
     if not papers_dir.is_dir():
         logger.error("Papers directory not found: %s", papers_dir)
+        sys.exit(1)
+
+    if args.hybrid and args.collection == COLLECTION_NAME:
+        logger.error(
+            "--hybrid is eval only: pass --collection eval_hybrid, not %r.",
+            COLLECTION_NAME,
+        )
         sys.exit(1)
 
     if args.overwrite:
@@ -73,6 +89,7 @@ if __name__ == "__main__":
             parsed_dir=Path(args.parsed_dir),
             overwrite=args.overwrite,
             collection_name=args.collection,
+            hybrid=args.hybrid,
         )
         logger.info("Ingested %d chunks.", count)
     except Exception as exc:

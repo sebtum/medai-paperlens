@@ -241,6 +241,19 @@ def record_rejections(
     return len(fresh)
 
 
+def run_threshold(run: RunRecord, threshold: float | None) -> float:
+    """The pooling cut-off for `run`: `threshold`, else the run's own default.
+
+    The default is `POOL_DEFAULT_THRESHOLD` for cosine runs. Reranked and hybrid runs
+    (score kind `rerank`, `rrf`) are not cut: their scores are not cosine values, and
+    a cosine-sized cut would hide most of a hybrid run (RRF scores are about 0.01 to
+    0.03).
+    """
+    if threshold is not None:
+        return threshold
+    return POOL_DEFAULT_THRESHOLD if run.meta.score_kind == "cosine" else 0.0
+
+
 @dataclass
 class PoolCandidate:
     """An unlabelled section seen in the top-k of at least one run."""
@@ -258,14 +271,15 @@ def pool_candidates(
     golden: Sequence[GoldenEntry],
     *,
     k: int = POOL_DEFAULT_K,
-    threshold: float = POOL_DEFAULT_THRESHOLD,
+    threshold: float | None = None,
     include_off_corpus: bool = False,
     skip: Collection[Rejection] = (),
 ) -> dict[str, list[PoolCandidate]]:
     """Per question id: sections in any run's top-k (chunk level) that no label covers.
 
     The rank is the chunk's position in that run's cut list (1 = best). Candidates in
-    `skip` (already read and rejected) are left out.
+    `skip` (already read and rejected) are left out. `threshold=None` cuts each run at
+    its own default (`run_threshold`); a number cuts every run there.
     """
     result: dict[str, list[PoolCandidate]] = {}
     for entry in golden:
@@ -277,7 +291,7 @@ def pool_candidates(
             question = next((q for q in run.questions if q.id == entry.id), None)
             if question is None:
                 raise RunError(f"run {run.meta.name!r} has no question {entry.id}")
-            hits: list[RankedHit] = cut(question.hits, k, threshold)
+            hits: list[RankedHit] = cut(question.hits, k, run_threshold(run, threshold))
             for rank, hit in enumerate(hits, start=1):
                 key = (hit.paper_id, hit.section)
                 if key in labelled or (entry.id, *key) in skip:
@@ -297,13 +311,21 @@ def pool_candidates(
     return result
 
 
+def _cuts_text(runs: Sequence[RunRecord], threshold: float | None) -> str:
+    """`t=0.40` for one cut-off, or `t=0.40 (a), t=0.00 (b)` when runs differ."""
+    cuts = {run.meta.name: run_threshold(run, threshold) for run in runs}
+    if len(set(cuts.values())) == 1:
+        return f"t={next(iter(cuts.values())):.2f}"
+    return ", ".join(f"t={value:.2f} ({name})" for name, value in cuts.items())
+
+
 def render_pool(
     pools: Mapping[str, Sequence[PoolCandidate]],
     golden: Sequence[GoldenEntry],
     runs: Sequence[RunRecord],
     *,
     k: int,
-    threshold: float,
+    threshold: float | None = None,
 ) -> str:
     """Markdown list for adjudication: ids and section labels only, no chunk text."""
     questions = {entry.id: entry for entry in golden}
@@ -313,7 +335,8 @@ def render_pool(
         "Note: golden set LLM-labelled (Claude), not human-verified.",
         "",
         f"- Runs: {', '.join(run.meta.name for run in runs)}",
-        f"- Top-{k} chunks per run at t={threshold:.2f}; sections not yet labelled",
+        f"- Top-{k} chunks per run at {_cuts_text(runs, threshold)}; sections not yet "
+        "labelled",
         "- Read each candidate's chunks (use `sections --dump-text`) and decide: "
         "grade 2, grade 1 or not relevant",
         "",
@@ -349,7 +372,7 @@ def pool_command(
     golden_path: Path,
     runs_dir: Path,
     k: int = POOL_DEFAULT_K,
-    threshold: float = POOL_DEFAULT_THRESHOLD,
+    threshold: float | None = None,
     include_off_corpus: bool = False,
     out: Path | None = None,
     adjudicated: Path = DEFAULT_ADJUDICATED,

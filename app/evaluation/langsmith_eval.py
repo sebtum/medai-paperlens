@@ -6,9 +6,8 @@
 and labels from the example, call the metric function and return the number.
 
 - Experiments run at one fixed k = 5. The threshold follows the run's score kind:
-  0.6 for cosine scores (`EXPERIMENT_THRESHOLD`), 0 for reranked runs
-  (`RERANK_THRESHOLD`; the cosine pre-filter already ran). Curves and k-sweeps are local
-  only.
+  0.6 for cosine scores (`EXPERIMENT_THRESHOLD`), 0 for reranked and hybrid runs
+  (`RERANK_THRESHOLD`; their scores are not cosine). Curves and k-sweeps are local only.
 - The experiment metadata holds the run config (R3/R4): config, golden sha256, git hash,
   chunk count, k, threshold.
 - Every target or evaluator error is recorded in a `ScoreBook` and re-raised. LangSmith
@@ -339,7 +338,7 @@ async def run_experiment(
     """Run one LangSmith experiment (`aevaluate`) for `config` at (k, threshold).
 
     Without `threshold` it follows the run's score kind (`default_threshold`): 0.6 for
-    cosine runs, 0 for reranked runs.
+    cosine runs, 0 for reranked and hybrid runs.
 
     Raises `ExperimentError` if the target or any evaluator failed, including errors
     LangSmith would only have logged.

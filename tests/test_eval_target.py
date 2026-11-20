@@ -949,3 +949,259 @@ class TestRerankedRetrieval:
             ("Results", 0.7),
             ("Appendix", 0.5),
         ]
+
+
+# ---------------------------------------------------------------------------
+# Hybrid retrieval (Phase 10, T10)
+# ---------------------------------------------------------------------------
+
+
+class HybridFakeQdrant(FakeAsyncQdrant):
+    """Fake hybrid collection: a fixed fused result, plus `get_collection`.
+
+    `query_points` returns `points` in the given order (the fusion happens inside Qdrant
+    in real life) and records the call; the dense/BM25 split is checked on the call.
+    """
+
+    def __init__(
+        self,
+        points: list[SimpleNamespace],
+        *,
+        vectors: Any = None,
+        sparse: Any = None,
+    ) -> None:
+        super().__init__(points)
+        self.params = SimpleNamespace(
+            vectors={"dense": object()} if vectors is None else vectors,
+            sparse_vectors={"bm25": object()} if sparse is None else sparse,
+        )
+        self.get_collection_calls: list[str] = []
+
+    async def query_points(self, **kwargs: Any) -> SimpleNamespace:
+        self.query_calls.append(kwargs)
+        return SimpleNamespace(points=list(self.points)[: kwargs["limit"]])
+
+    async def get_collection(self, name: str) -> SimpleNamespace:
+        self.get_collection_calls.append(name)
+        return SimpleNamespace(config=SimpleNamespace(params=self.params))
+
+
+def hybrid_config(**overrides: Any) -> RetrievalConfig:
+    return make_config(collection="eval_hybrid", hybrid=True, **overrides)
+
+
+@pytest.fixture
+def hybrid_corpus() -> HybridFakeQdrant:
+    """A fused list: RRF scores are tiny, and the last hit is a BM25-only chunk."""
+    return HybridFakeQdrant(
+        [
+            titled_point("Paper A", "pa", "Intro", 0, text="text a", score=0.0328),
+            titled_point("Paper A", "pa", "Methods", 1, text="text b", score=0.0161),
+            titled_point("Paper B", "pb", "Results", 0, text="text c", score=0.0159),
+        ]
+    )
+
+
+class TestHybridConfig:
+    def test_defaults_are_not_hybrid(self) -> None:
+        assert make_config().hybrid is False
+
+    def test_hybrid_scores_are_rrf_scores(self) -> None:
+        assert hybrid_config().score_kind == "rrf"
+
+    def test_a_reranker_makes_hybrid_scores_rerank_scores(self) -> None:
+        assert hybrid_config(reranker="some/reranker").score_kind == "rerank"
+
+
+class TestHybridRetrieval:
+    async def test_dense_side_gets_the_prefix_and_bm25_the_bare_query(
+        self, hybrid_corpus: HybridFakeQdrant
+    ) -> None:
+        embedder = FakeEmbedder()
+        entry = make_entry(question="How is the model evaluated?")
+        result = await retrieve_ranked(
+            entry,
+            hybrid_config(prefix="Represent this: "),
+            embedder=embedder,
+            client=hybrid_corpus,  # type: ignore[arg-type]
+        )
+
+        assert embedder.texts == ["Represent this: How is the model evaluated?"]
+        assert result.query == "How is the model evaluated?"
+        (call,) = hybrid_corpus.query_calls
+        dense, bm25 = call["prefetch"]
+        assert bm25.query.text == "How is the model evaluated?"  # no prefix
+        assert (dense.using, bm25.using) == ("dense", "bm25")
+
+    async def test_the_rewritten_query_feeds_both_sides(
+        self, hybrid_corpus: HybridFakeQdrant, tmp_path: Path
+    ) -> None:
+        entry = make_entry()
+        cache = RewriteCache(tmp_path / "rewrites.jsonl")
+        cache.put(RewriteKey.for_entry(entry, REWRITER), "a cached rewrite")
+        embedder = FakeEmbedder()
+
+        result = await retrieve_ranked(
+            entry,
+            hybrid_config(prefix="P: ", rewrite=True, rewrite_model=REWRITER),
+            embedder=embedder,
+            client=hybrid_corpus,  # type: ignore[arg-type]
+            cache=cache,
+        )
+
+        assert embedder.texts == ["P: a cached rewrite"]
+        assert result.query == "a cached rewrite"
+        assert hybrid_corpus.query_calls[0]["prefetch"][1].query.text == (
+            "a cached rewrite"
+        )
+
+    async def test_depth_and_the_dense_cut_go_into_the_query(
+        self, hybrid_corpus: HybridFakeQdrant
+    ) -> None:
+        await retrieve_ranked(
+            make_entry(),
+            hybrid_config(depth=20, prefilter_threshold=0.6),
+            embedder=FakeEmbedder(),
+            client=hybrid_corpus,  # type: ignore[arg-type]
+        )
+
+        (call,) = hybrid_corpus.query_calls
+        assert call["collection_name"] == "eval_hybrid"
+        assert call["limit"] == 20
+        dense, bm25 = call["prefetch"]
+        assert (dense.limit, bm25.limit) == (20, 20)
+        assert dense.score_threshold == 0.6
+        assert bm25.score_threshold is None
+
+    async def test_hybrid_only_returns_the_fused_order_and_scores_untouched(
+        self, hybrid_corpus: HybridFakeQdrant
+    ) -> None:
+        result = await retrieve_ranked(
+            make_entry(),
+            hybrid_config(),
+            embedder=FakeEmbedder(),
+            client=hybrid_corpus,  # type: ignore[arg-type]
+        )
+
+        assert [(h.section, h.score) for h in result.hits] == [
+            ("Intro", 0.0328),
+            ("Methods", 0.0161),
+            ("Results", 0.0159),
+        ]
+        assert result.rerank_ms is None
+
+    async def test_a_reranker_sees_the_whole_fused_list_without_a_cosine_cut(
+        self, hybrid_corpus: HybridFakeQdrant
+    ) -> None:
+        # All three RRF scores are far below 0.6; a cosine pre-filter would drop them.
+        reranker = FakeReranker(scores=[0.1, 0.9, 0.5])
+        result = await retrieve_ranked(
+            make_entry(),
+            hybrid_config(reranker="some/reranker"),
+            embedder=FakeEmbedder(),
+            client=hybrid_corpus,  # type: ignore[arg-type]
+            reranker=reranker,
+        )
+
+        assert len(reranker.calls[0][1]) == 3
+        assert reranker.calls[0][1][0] == rerank_passage("Paper A", "Intro", "text a")
+        assert [(h.section, h.score) for h in result.hits] == [
+            ("Methods", 0.9),
+            ("Results", 0.5),
+            ("Intro", 0.1),
+        ]
+        assert result.rerank_ms is not None
+
+    async def test_the_reranker_can_read_the_original_question(
+        self, hybrid_corpus: HybridFakeQdrant
+    ) -> None:
+        reranker = FakeReranker(scores=[0.1, 0.2, 0.3])
+        entry = make_entry(question="the golden question")
+        await retrieve_ranked(
+            entry,
+            hybrid_config(reranker="some/reranker", rerank_query="original"),
+            embedder=FakeEmbedder(),
+            client=hybrid_corpus,  # type: ignore[arg-type]
+            reranker=reranker,
+        )
+        assert reranker.calls[0][0] == "the golden question"
+
+    async def test_a_dense_config_never_sends_a_prefetch(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        await retrieve_ranked(
+            make_entry(),
+            make_config(),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+        )
+        assert "prefetch" not in rerank_corpus.query_calls[0]
+
+
+class TestHybridPreflight:
+    def entries(self) -> list[GoldenEntry]:
+        return [make_entry(relevant=[("maira_2", "Results", 2)])]
+
+    async def test_a_hybrid_collection_passes_and_is_read_for_its_layout(
+        self,
+    ) -> None:
+        client = HybridFakeQdrant([make_point("maira_2", "Results", 0)])
+
+        index = await preflight(
+            self.entries(),
+            client,  # type: ignore[arg-type]
+            hybrid_config(),
+        )
+
+        assert index.chunk_count == 1
+        assert client.get_collection_calls == ["eval_hybrid"]
+
+    async def test_stale_labels_are_still_found_in_a_hybrid_collection(self) -> None:
+        client = HybridFakeQdrant([make_point("maira_2", "Methods", 0)])
+
+        with pytest.raises(PreflightError, match="labelled section does not exist"):
+            await preflight(
+                self.entries(),
+                client,  # type: ignore[arg-type]
+                hybrid_config(),
+            )
+
+    async def test_the_embedding_model_is_still_checked(self) -> None:
+        client = HybridFakeQdrant(
+            [make_point("maira_2", "Results", 0, model="other/model")]
+        )
+
+        with pytest.raises(PreflightError, match="other/model"):
+            await preflight(
+                self.entries(),
+                client,  # type: ignore[arg-type]
+                hybrid_config(),
+            )
+
+    async def test_a_collection_without_the_hybrid_layout_is_refused(self) -> None:
+        # The app collection: one unnamed dense vector, no sparse vector.
+        client = HybridFakeQdrant(
+            [make_point("maira_2", "Results", 0)],
+            vectors=SimpleNamespace(size=384),
+            sparse={},
+        )
+
+        with pytest.raises(PreflightError) as excinfo:
+            await preflight(
+                self.entries(),
+                client,  # type: ignore[arg-type]
+                hybrid_config(),
+            )
+        message = str(excinfo.value)
+        assert "no named dense vector 'dense'" in message
+        assert "no sparse vector 'bm25'" in message
+
+    async def test_a_dense_config_does_not_read_the_layout(
+        self, corpus: FakeAsyncQdrant
+    ) -> None:
+        # FakeAsyncQdrant has no get_collection: the call would raise AttributeError.
+        await preflight(
+            [make_entry(relevant=[("maira_2", "Results", 2)])],
+            corpus,  # type: ignore[arg-type]
+            make_config(),
+        )
