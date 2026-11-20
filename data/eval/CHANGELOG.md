@@ -131,3 +131,31 @@ Candidates by reranker (a candidate counts for a reranker if any of its three ru
 **Freeze.** `validate_golden` passes. Hash after: `cc08395a87ca30fc302b98065395f77404f192d3999f22428cab009b38022b0c` (v2 draft was `af6ce07a...64af`). The 13 runs were re-run on this file with `--no-llm` so every run record carries it. The LangSmith dataset sync is not part of T6 (the orchestrator handles it, it needs a committed file).
 
 Golden set LLM-labelled (Claude), not human-verified. The same author wrote the questions and judged the retrieved sections, and a different or second reader would likely add or reject some of these.
+
+### v2 amendment, T10 hybrid labelling pass (2026-11-20)
+
+The two hybrid runs (`hybrid`, `hybrid_rerank`) put some sections into their top 5 that no label or earlier rejection covered. An unlabelled section counts as irrelevant, so these were read before the hybrid runs are compared. No question text, id, type or `source_chunks` entry changed. No label was removed or re-graded. The golden hash changed, so every run record must be re-run on the new file.
+
+**Method.** The pool is the union of the top 5 chunks (no cut) of `hybrid` and `hybrid_rerank`, minus sections already labelled or rejected: 48 candidates over 45 questions (command: `pool hybrid hybrid_rerank --k 5`). The chunk text of every candidate was read from the `papers` collection (`sections --dump-text`, folder outside the repo) and judged against the question text only, by the Phase 9 and T6 standard: grade 2 fully answers, grade 1 holds part of the answer or clear support, same topic only is not added. Scores and ranks were not used. The rejections were written to `adjudicated.jsonl` with the same helper (`record_rejections`) as in T6, one reason per candidate, in one process (the `pool --reject` command checks the run hash against the golden file and the hybrid runs are on the old hash).
+
+| Item | Value |
+|---|---|
+| Candidates read | 48 |
+| Added at grade 2 / grade 1 | 0 / 2 |
+| Rejected | 46 (each with a reason in `data/eval/adjudicated.jsonl`) |
+| Total labels after | 161 (84 at grade 2, 77 at grade 1), was 159 |
+
+**Additions.**
+
+| Question | Type | Paper | Section | Grade | Reason |
+|---|---|---|---|---|---|
+| q022 | cross_paper | med_palm_m | Appendix > Details on Human Evaluation | 1 | States that the input to the model is a single image and the indication from a single study. Same kind of support as the labelled Appendix > Chest X-ray report generation. |
+| q043 | multi_section | gaze2report | Introduction | 1 | States the contributions: visual-gaze tokens combined with generation instructions as the prompt, and evaluation on multiple datasets with NLG and clinical efficacy metrics. Does not name the datasets or metrics. |
+
+**Notable rejections.** maira_2 `Additional qualitative examples > MAIRA-2 model inputs` for q012 is a banned false heading (example-figure label), so it could not be labelled in any case. conch `Results > Zero-shot classification of diverse tissues and diseases` for q002 names TCGA BRCA but gives no slide counts. deep_tumor_vqa `Accuracy Breakdown across Demographic and Imaging Factors` for q016 reports accuracy by subgroup but not a training method. gaze2report `Abstract` for q029 gives no F1 value. cxr_vlm_generation `Stable Diffusion Fine-Tuning > Training details` for q040 gives hardware and weight sources, not which parts were frozen. Most others were another paper or the same topic only.
+
+**Hash.** Before: `cc08395a87ca30fc302b98065395f77404f192d3999f22428cab009b38022b0c`. After: `7f236dd41db41e38e4b5ae79a706e1265b4ca9bb98d151b2658a5beaad2fcd24`. `validate_golden` passes (65 questions, 161 labels).
+
+Golden set LLM-labelled (Claude), not human-verified. The same author wrote the questions and judged the retrieved sections, and a second reader would likely add or reject some of these.
+
+**Runs after this pass (2026-11-20).** Re-run on hash `7f236dd41db4`: `baseline`, `no_rewrite`, `prefix`, `bge_base`, `hybrid`, `hybrid_rerank`, `rerank_minilm`, `rerank_minilm_orig`, `rerank_minilm_d40`. Not re-run, still on `cc08395a87ca`: the six `rerank_bge*` and `rerank_medcpt*` runs. Those models are not used (ADR-0026), so the old records stay as historical evidence and cannot be compared with the new ones. The `*_v0` runs belong to golden set v0/v1 and are unchanged.

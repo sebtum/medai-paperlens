@@ -2,7 +2,7 @@
 
 Note: golden set LLM-labelled (Claude), not human-verified.
 
-- Run: `prefix`, config `{"collection": "papers", "config_name": "prefix", "depth": 20, "embedder": "BAAI/bge-small-en-v1.5", "golden_validated": true, "prefix": "Represent this sentence for searching relevant passages: ", "reranker": null, "retrieval_threshold": 0.0, "rewrite": true, "rewrite_model": "qwen3:0.6b", "rewrite_prompt_sha256": "945eb0733345db9575c97f3d9224c9583cb474ea503318a19ef86bf7b06f5243", "score_kind": "cosine"}`, golden sha256 `cc08395a87ca`, git `3d61760-dirty`, 595 chunks in the collection
+- Run: `prefix`, config `{"collection": "papers", "config_name": "prefix", "depth": 20, "embedder": "BAAI/bge-small-en-v1.5", "golden_validated": true, "prefix": "Represent this sentence for searching relevant passages: ", "reranker": null, "retrieval_threshold": 0.0, "rewrite": true, "rewrite_model": "qwen3:0.6b", "rewrite_prompt_sha256": "945eb0733345db9575c97f3d9224c9583cb474ea503318a19ef86bf7b06f5243", "score_kind": "cosine"}`, golden sha256 `7f236dd41db4`, git `0d961f8-dirty`, 595 chunks in the collection
 - Score kind: cosine; threshold: 0.60; 45 on-corpus and 20 off-corpus questions
 
 ## By k (on-corpus questions)
@@ -11,9 +11,9 @@ Precision is the share of the top-k chunks that sit in a labelled section (how m
 
 | k | Recall | nDCG | MRR | Precision | Recall vs ceiling | Wrong section | Crowding | Table hit rate | Evidence tokens |
 |---|---|---|---|---|---|---|---|---|---|
-| 3 | 0.460 | 0.568 | 0.763 | 0.526 | 0.581 | 0.304 | 1.44 | 0.625 | 1438 |
-| 5 | 0.521 | 0.564 | 0.763 | 0.444 | 0.545 | 0.351 | 1.69 | 0.625 | 2375 |
-| 10 | 0.698 | 0.635 | 0.778 | 0.370 | 0.698 | 0.385 | 2.36 | 0.750 | 4689 |
+| 3 | 0.457 | 0.568 | 0.763 | 0.526 | 0.581 | 0.304 | 1.44 | 0.625 | 1438 |
+| 5 | 0.522 | 0.565 | 0.763 | 0.449 | 0.547 | 0.347 | 1.69 | 0.625 | 2375 |
+| 10 | 0.696 | 0.635 | 0.778 | 0.373 | 0.696 | 0.383 | 2.36 | 0.750 | 4689 |
 
 ## By question type (k=5)
 
@@ -23,9 +23,9 @@ The n-gram overlap is the longest run of words a question shares with its source
 |---|---|---|---|---|---|---|---|---|---|
 | factual | 10 | 0.650 | 0.676 | 0.700 | 0.240 | 0.650 | 0.00 | 2.9 | 4 |
 | paraphrased | 10 | 0.540 | 0.515 | 0.783 | 0.540 | 0.540 | 0.00 | 2.0 | 3 |
-| cross_paper | 8 | 0.232 | 0.306 | 0.625 | 0.350 | 0.306 | 0.00 | 2.6 | 4 |
+| cross_paper | 8 | 0.243 | 0.318 | 0.625 | 0.375 | 0.331 | 0.00 | 2.6 | 4 |
 | table | 8 | 0.583 | 0.614 | 0.750 | 0.375 | 0.583 | 0.00 | 2.4 | 5 |
-| multi_section | 9 | 0.560 | 0.679 | 0.944 | 0.711 | 0.611 | 0.00 | 2.6 | 3 |
+| multi_section | 9 | 0.551 | 0.676 | 0.944 | 0.711 | 0.602 | 0.00 | 2.6 | 3 |
 | off_corpus | 20 | n/a | n/a | n/a | n/a | n/a | 0.00 | n/a | n/a |
 
 ## Thresholded results

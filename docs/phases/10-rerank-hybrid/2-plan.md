@@ -133,17 +133,17 @@ With a hard cut-off, the app answers "No relevant papers found." below the chose
   - [ ] Skipped with a one-line note if T7 picks nothing.
 - Note: Skipped 2026-11-19. The owner chose no refusal option at the T7 review. No ADR-0027. Refusal moves to the Phase 11 grounding check.
 
-### [ ] T10: Hybrid search, eval only
+### [x] T10: Hybrid search, eval only
 Score chunks by keywords as well, merge both lists, and test whether that plus the reranker beats the reranker alone.
 - Files: `app/retrieval/ingestion.py`, `search.py`, `scripts/ingest.py`, `app/evaluation/target.py`, `runner.py`, tests, `docs/adr/0028-hybrid-search.md`
 - Depends on: T7 · Group: G6
 - Acceptance criteria:
-  - [ ] Spike: BM25 computed by Qdrant itself (`models.Document(model="qdrant/bm25")`, sparse vector with IDF), with no new dependency. **If it fails, stop and ask the owner** about `fastembed`.
-  - [ ] `ingest(..., hybrid=True)` writes collection `eval_hybrid` (dense plus sparse `bm25` over `embed_text`). `papers` is untouched.
-  - [ ] `search_hits_hybrid`: dense prefetch (cosine ≥ 0.6) plus BM25 prefetch, fused by RRF (reciprocal rank fusion), limit 20.
-  - [ ] Runs `hybrid` (measured only) and `hybrid_rerank` (adopted reranker). Pool their top 5 (rejected candidates skipped). Rule against the adopted reranker config.
-  - [ ] ADR-0028 records adopted or not. **If adopted, stop and re-plan app integration** (re-ingest `papers`, search change, Compose).
-- Note:
+  - [x] Spike: BM25 computed by Qdrant itself (`models.Document(model="qdrant/bm25")`, sparse vector with IDF), with no new dependency. **If it fails, stop and ask the owner** about `fastembed`.
+  - [x] `ingest(..., hybrid=True)` writes collection `eval_hybrid` (dense plus sparse `bm25` over `embed_text`). `papers` is untouched.
+  - [x] `search_hits_hybrid`: dense prefetch (cosine ≥ 0.6) plus BM25 prefetch, fused by RRF (reciprocal rank fusion), limit 20.
+  - [x] Runs `hybrid` (measured only) and `hybrid_rerank` (adopted reranker). Pool their top 5 (rejected candidates skipped). Rule against the adopted reranker config.
+  - [x] ADR-0028 records adopted or not. **If adopted, stop and re-plan app integration** (re-ingest `papers`, search change, Compose).
+- Note: done 2026-11-20. Hybrid not adopted: `hybrid_rerank` against `rerank_minilm` is +0.023, range -0.0237 to +0.0840, A stays (ADR-0028, Proposed). Alone, `hybrid` is +0.132 over `prefix` and +0.014 over `rerank_minilm` (not a safe difference). Labelling: 48 candidates, 2 added, 46 rejected; golden hash now `7f236dd41db4`, 161 labels. Reports: `3-execute-T10-spike.md`, `3-execute-T10-labels.md`, `3-execute-T10.md`.
 
 ### [ ] T11: Chunk-size trigger
 Check whether "right paper, wrong section" is still above 25 % of top-5 hits after the reranker.

@@ -28,5 +28,6 @@
 | [0024](0024-eval-dataset-versioning-and-runner.md) | Eval dataset versioning and retrieval eval runner | Accepted | Extends 0019 |
 | [0025](0025-retrieval-defaults-after-eval.md) | Retrieval defaults after the Phase 9 evaluation (threshold, top_k, rewrite, embedder, query prefix) | Accepted | Amends 0022, 0012 |
 | [0026](0026-reranker.md) | Reranker: MiniLM, depth 20, rewritten query, no refusal rule | Accepted | Follows 0025 |
+| [0028](0028-hybrid-search.md) | Hybrid search (BM25 plus dense, RRF) measured, not adopted | Proposed | Follows 0026 |
 
 See [0000-template.md](0000-template.md) for the ADR format.

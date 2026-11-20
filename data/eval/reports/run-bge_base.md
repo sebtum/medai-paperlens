@@ -2,7 +2,7 @@
 
 Note: golden set LLM-labelled (Claude), not human-verified.
 
-- Run: `bge_base`, config `{"collection": "eval_bge-base-en-v1.5", "config_name": "bge_base", "depth": 20, "embedder": "BAAI/bge-base-en-v1.5", "golden_validated": true, "prefix": "", "reranker": null, "retrieval_threshold": 0.0, "rewrite": true, "rewrite_model": "qwen3:0.6b", "rewrite_prompt_sha256": "945eb0733345db9575c97f3d9224c9583cb474ea503318a19ef86bf7b06f5243", "score_kind": "cosine"}`, golden sha256 `cc08395a87ca`, git `3d61760-dirty`, 595 chunks in the collection
+- Run: `bge_base`, config `{"collection": "eval_bge-base-en-v1.5", "config_name": "bge_base", "depth": 20, "embedder": "BAAI/bge-base-en-v1.5", "golden_validated": true, "prefix": "", "reranker": null, "retrieval_threshold": 0.0, "rewrite": true, "rewrite_model": "qwen3:0.6b", "rewrite_prompt_sha256": "945eb0733345db9575c97f3d9224c9583cb474ea503318a19ef86bf7b06f5243", "score_kind": "cosine"}`, golden sha256 `7f236dd41db4`, git `0d961f8-dirty`, 595 chunks in the collection
 - Score kind: cosine; threshold: 0.60; 45 on-corpus and 20 off-corpus questions
 
 ## By k (on-corpus questions)
@@ -11,9 +11,9 @@ Precision is the share of the top-k chunks that sit in a labelled section (how m
 
 | k | Recall | nDCG | MRR | Precision | Recall vs ceiling | Wrong section | Crowding | Table hit rate | Evidence tokens |
 |---|---|---|---|---|---|---|---|---|---|
-| 3 | 0.435 | 0.544 | 0.693 | 0.533 | 0.552 | 0.267 | 1.56 | 0.625 | 1418 |
-| 5 | 0.531 | 0.543 | 0.698 | 0.467 | 0.555 | 0.320 | 1.71 | 0.625 | 2321 |
-| 10 | 0.668 | 0.600 | 0.714 | 0.360 | 0.668 | 0.398 | 2.07 | 0.625 | 4456 |
+| 3 | 0.432 | 0.544 | 0.693 | 0.533 | 0.552 | 0.267 | 1.56 | 0.625 | 1418 |
+| 5 | 0.531 | 0.544 | 0.698 | 0.471 | 0.558 | 0.316 | 1.71 | 0.625 | 2321 |
+| 10 | 0.674 | 0.602 | 0.714 | 0.364 | 0.674 | 0.393 | 2.07 | 0.625 | 4456 |
 
 ## By question type (k=5)
 
@@ -23,9 +23,9 @@ The n-gram overlap is the longest run of words a question shares with its source
 |---|---|---|---|---|---|---|---|---|---|
 | factual | 10 | 0.750 | 0.645 | 0.625 | 0.300 | 0.750 | 0.00 | 2.9 | 4 |
 | paraphrased | 10 | 0.565 | 0.500 | 0.683 | 0.560 | 0.565 | 0.00 | 2.0 | 3 |
-| cross_paper | 8 | 0.256 | 0.379 | 0.667 | 0.375 | 0.338 | 0.00 | 2.6 | 4 |
+| cross_paper | 8 | 0.267 | 0.390 | 0.667 | 0.400 | 0.362 | 0.00 | 2.6 | 4 |
 | table | 8 | 0.521 | 0.490 | 0.500 | 0.400 | 0.521 | 0.00 | 2.4 | 5 |
-| multi_section | 9 | 0.501 | 0.670 | 1.000 | 0.689 | 0.552 | 0.00 | 2.6 | 3 |
+| multi_section | 9 | 0.492 | 0.664 | 1.000 | 0.689 | 0.543 | 0.00 | 2.6 | 3 |
 | off_corpus | 20 | n/a | n/a | n/a | n/a | n/a | 0.00 | n/a | n/a |
 
 ## Thresholded results
