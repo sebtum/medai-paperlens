@@ -14,8 +14,8 @@
     "score_kind": "cosine",
     "reranker": null
   },
-  "golden_sha256": "7f236dd41db41e38e4b5ae79a706e1265b4ca9bb98d151b2658a5beaad2fcd24",
-  "git_hash": "0d961f8-dirty",
+  "golden_sha256": "0c62886fd4897ee84bacf8a776c44fa319ae12ef5a8f3c8338254e598467b097",
+  "git_hash": "2fe32a5-dirty",
   "chunk_count": 595,
   "questions": [
     {"id": "q001", "type": "factual", "query": "What beam size does Gaze2Report use for beam search when generating reports at test time?", "ngram_overlap": 2, "hits": [["gaze2report", "Experiment Design and Results", 8, "text", 0.76024145], ["gaze2report", "Experiment Design and Results", 15, "table", 0.7378592], ["gaze2report", "Experiment Design and Results", 14, "table", 0.73325264], ["gaze2report", "Experiment Design and Results", 12, "table", 0.71784043], ["gaze2report", "Experiment Design and Results", 13, "table", 0.7171621], ["gaze2report", "Compliance with Ethical Standards", 17, "text", 0.71512425], ["gaze2report", "Methodology", 6, "text", 0.713843], ["gaze2report", "Introduction", 2, "text", 0.7124144], ["gaze2report", "Experiment Design and Results", 11, "table", 0.7094303], ["gaze2report", "Experiment Design and Results", 7, "text", 0.70518005], ["gaze2report", "Abstract", 0, "text", 0.70431817], ["gaze2report", "Experiment Design and Results", 10, "text", 0.70099545], ["gaze2report", "Methodology", 5, "text", 0.700302], ["gaze2report", "Methodology", 3, "text", 0.69907856], ["gaze2report", "Conclusion", 16, "text", 0.69136065], ["gaze2report", "Experiment Design and Results", 9, "text", 0.6888081], ["gaze2report", "Introduction", 1, "text", 0.67194146], ["maira_2", "RadFact metric > Implementation details", 42, "text", 0.66836226], ["gaze2report", "Methodology", 4, "text", 0.6569136], ["maira_2", "Methods > Evaluation and metrics", 13, "text", 0.64500666]], "chunk_tokens": [225, 456, 193, 241, 235, 109, 301, 332, 304, 393, 447, 530, 340, 440, 174, 554, 894, 470, 722, 599]},

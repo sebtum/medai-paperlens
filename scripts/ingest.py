@@ -54,6 +54,22 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--chunk-tokens",
+        type=int,
+        help=(
+            "Eval only (Phase 10, T11): cap chunks at this many tokens (embed text "
+            "including the title line). Needs a non-default --collection."
+        ),
+    )
+    parser.add_argument(
+        "--no-merge-peers",
+        action="store_true",
+        help=(
+            "Eval only (Phase 10, T11): keep Docling's pieces apart instead of "
+            "merging neighbours under one heading. Needs a non-default --collection."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Drop and recreate the collection before ingesting.",
@@ -68,6 +84,16 @@ if __name__ == "__main__":
     if args.hybrid and args.collection == COLLECTION_NAME:
         logger.error(
             "--hybrid is eval only: pass --collection eval_hybrid, not %r.",
+            COLLECTION_NAME,
+        )
+        sys.exit(1)
+
+    if (args.chunk_tokens is not None or args.no_merge_peers) and (
+        args.collection == COLLECTION_NAME
+    ):
+        logger.error(
+            "--chunk-tokens and --no-merge-peers are eval only: pass --collection "
+            "eval_..., not %r.",
             COLLECTION_NAME,
         )
         sys.exit(1)
@@ -90,6 +116,8 @@ if __name__ == "__main__":
             overwrite=args.overwrite,
             collection_name=args.collection,
             hybrid=args.hybrid,
+            chunk_max_tokens=args.chunk_tokens,
+            merge_peers=not args.no_merge_peers,
         )
         logger.info("Ingested %d chunks.", count)
     except Exception as exc:

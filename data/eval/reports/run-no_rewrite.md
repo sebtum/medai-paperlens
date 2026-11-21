@@ -2,7 +2,7 @@
 
 Note: golden set LLM-labelled (Claude), not human-verified.
 
-- Run: `no_rewrite`, config `{"collection": "papers", "config_name": "no_rewrite", "depth": 20, "embedder": "BAAI/bge-small-en-v1.5", "golden_validated": true, "prefix": "", "reranker": null, "retrieval_threshold": 0.0, "rewrite": false, "rewrite_model": "", "rewrite_prompt_sha256": null, "score_kind": "cosine"}`, golden sha256 `7f236dd41db4`, git `0d961f8-dirty`, 595 chunks in the collection
+- Run: `no_rewrite`, config `{"collection": "papers", "config_name": "no_rewrite", "depth": 20, "embedder": "BAAI/bge-small-en-v1.5", "golden_validated": true, "prefix": "", "reranker": null, "retrieval_threshold": 0.0, "rewrite": false, "rewrite_model": "", "rewrite_prompt_sha256": null, "score_kind": "cosine"}`, golden sha256 `0c62886fd489`, git `2fe32a5-dirty`, 595 chunks in the collection
 - Score kind: cosine; threshold: 0.60; 45 on-corpus and 20 off-corpus questions
 
 ## By k (on-corpus questions)
@@ -11,9 +11,9 @@ Precision is the share of the top-k chunks that sit in a labelled section (how m
 
 | k | Recall | nDCG | MRR | Precision | Recall vs ceiling | Wrong section | Crowding | Table hit rate | Evidence tokens |
 |---|---|---|---|---|---|---|---|---|---|
-| 3 | 0.454 | 0.556 | 0.722 | 0.541 | 0.574 | 0.281 | 1.38 | 0.625 | 1440 |
-| 5 | 0.504 | 0.547 | 0.727 | 0.462 | 0.530 | 0.342 | 1.67 | 0.750 | 2368 |
-| 10 | 0.717 | 0.628 | 0.739 | 0.373 | 0.717 | 0.407 | 2.36 | 0.875 | 4690 |
+| 3 | 0.452 | 0.556 | 0.722 | 0.541 | 0.574 | 0.281 | 1.38 | 0.625 | 1440 |
+| 5 | 0.500 | 0.547 | 0.727 | 0.462 | 0.530 | 0.342 | 1.67 | 0.750 | 2368 |
+| 10 | 0.715 | 0.627 | 0.739 | 0.376 | 0.715 | 0.404 | 2.36 | 0.875 | 4690 |
 
 ## By question type (k=5)
 
@@ -23,9 +23,9 @@ The n-gram overlap is the longest run of words a question shares with its source
 |---|---|---|---|---|---|---|---|---|---|
 | factual | 10 | 0.650 | 0.676 | 0.700 | 0.260 | 0.650 | 0.00 | 2.9 | 4 |
 | paraphrased | 10 | 0.485 | 0.452 | 0.703 | 0.480 | 0.485 | 0.00 | 2.0 | 3 |
-| cross_paper | 8 | 0.274 | 0.338 | 0.604 | 0.375 | 0.362 | 0.00 | 2.6 | 4 |
+| cross_paper | 8 | 0.264 | 0.338 | 0.604 | 0.375 | 0.362 | 0.00 | 2.6 | 4 |
 | table | 8 | 0.521 | 0.569 | 0.688 | 0.450 | 0.521 | 0.00 | 2.4 | 5 |
-| multi_section | 9 | 0.551 | 0.673 | 0.926 | 0.756 | 0.602 | 0.00 | 2.6 | 3 |
+| multi_section | 9 | 0.544 | 0.673 | 0.926 | 0.756 | 0.602 | 0.00 | 2.6 | 3 |
 | off_corpus | 20 | n/a | n/a | n/a | n/a | n/a | 0.00 | n/a | n/a |
 
 ## Thresholded results

@@ -545,6 +545,27 @@ class TestPreflight:
         with pytest.raises(PreflightError, match="section does not exist"):
             await preflight(entries, corpus, make_config())  # type: ignore[arg-type]
 
+    async def test_rechunked_skips_source_chunk_checks_but_keeps_the_section_check(
+        self, corpus: FakeAsyncQdrant
+    ) -> None:
+        stale_numbers = [make_entry(source_chunks=["maira_2:99", "garbage"])]
+        index = await preflight(
+            stale_numbers,
+            corpus,  # type: ignore[arg-type]
+            make_config(),
+            skip_source_chunks=True,
+        )
+        assert index.chunk_count == 3
+
+        missing_section = [make_entry(relevant=[("maira_2", "Nope", 1)])]
+        with pytest.raises(PreflightError, match="section does not exist"):
+            await preflight(
+                missing_section,
+                corpus,  # type: ignore[arg-type]
+                make_config(),
+                skip_source_chunks=True,
+            )
+
     async def test_missing_source_chunk_is_reported(
         self, corpus: FakeAsyncQdrant
     ) -> None:

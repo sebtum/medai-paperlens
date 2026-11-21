@@ -113,6 +113,12 @@ def _add_run(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="Validate and run the pre-flight against Qdrant, then stop.",
     )
     run.add_argument(
+        "--rechunked",
+        action="store_true",
+        help="Collection was cut differently (Phase 10, T11): skip the checks on "
+        "source chunk numbers. Needs --name and --collection.",
+    )
+    run.add_argument(
         "--langsmith",
         action="store_true",
         help=f"Also run a LangSmith experiment (k={EXPERIMENT_K}, "
@@ -265,6 +271,7 @@ def _dispatch(args: argparse.Namespace, services: Services) -> list[str]:
             depth=args.depth,
             rerank_query=args.rerank_query,
             reranker=args.reranker,
+            rechunked=args.rechunked,
         )
         return asyncio.run(run_command(options, services))
     if args.command == "compare":

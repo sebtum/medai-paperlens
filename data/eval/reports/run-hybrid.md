@@ -2,7 +2,7 @@
 
 Note: golden set LLM-labelled (Claude), not human-verified.
 
-- Run: `hybrid`, config `{"collection": "eval_hybrid", "config_name": "hybrid", "depth": 20, "embedder": "BAAI/bge-small-en-v1.5", "fusion": "rrf", "golden_validated": true, "hybrid": true, "prefilter_threshold": 0.6, "prefix": "Represent this sentence for searching relevant passages: ", "reranker": null, "retrieval_threshold": 0.0, "rewrite": true, "rewrite_model": "qwen3:0.6b", "rewrite_prompt_sha256": "945eb0733345db9575c97f3d9224c9583cb474ea503318a19ef86bf7b06f5243", "score_kind": "rrf"}`, golden sha256 `7f236dd41db4`, git `0d961f8-dirty`, 595 chunks in the collection
+- Run: `hybrid`, config `{"collection": "eval_hybrid", "config_name": "hybrid", "depth": 20, "embedder": "BAAI/bge-small-en-v1.5", "fusion": "rrf", "golden_validated": true, "hybrid": true, "prefilter_threshold": 0.6, "prefix": "Represent this sentence for searching relevant passages: ", "reranker": null, "retrieval_threshold": 0.0, "rewrite": true, "rewrite_model": "qwen3:0.6b", "rewrite_prompt_sha256": "945eb0733345db9575c97f3d9224c9583cb474ea503318a19ef86bf7b06f5243", "score_kind": "rrf"}`, golden sha256 `0c62886fd489`, git `2fe32a5-dirty`, 595 chunks in the collection
 - Score kind: rrf; threshold: 0.00; 45 on-corpus and 20 off-corpus questions
 
 ## By k (on-corpus questions)
@@ -11,9 +11,9 @@ Precision is the share of the top-k chunks that sit in a labelled section (how m
 
 | k | Recall | nDCG | MRR | Precision | Recall vs ceiling | Wrong section | Crowding | Table hit rate | Evidence tokens |
 |---|---|---|---|---|---|---|---|---|---|
-| 3 | 0.578 | 0.702 | 0.900 | 0.637 | 0.719 | 0.222 | 1.44 | 0.750 | 1564 |
-| 5 | 0.648 | 0.697 | 0.900 | 0.516 | 0.679 | 0.311 | 1.73 | 0.875 | 2486 |
-| 10 | 0.773 | 0.748 | 0.907 | 0.407 | 0.773 | 0.378 | 2.47 | 1.000 | 4931 |
+| 3 | 0.574 | 0.702 | 0.900 | 0.637 | 0.719 | 0.222 | 1.42 | 0.750 | 1568 |
+| 5 | 0.643 | 0.697 | 0.900 | 0.516 | 0.679 | 0.302 | 1.76 | 0.875 | 2493 |
+| 10 | 0.774 | 0.748 | 0.907 | 0.411 | 0.774 | 0.373 | 2.49 | 1.000 | 4927 |
 
 ## Hybrid search
 
@@ -29,9 +29,9 @@ The n-gram overlap is the longest run of words a question shares with its source
 |---|---|---|---|---|---|---|---|---|---|
 | factual | 10 | 0.850 | 0.802 | 0.800 | 0.280 | 0.850 | 0.00 | 2.9 | 4 |
 | paraphrased | 10 | 0.568 | 0.618 | 1.000 | 0.480 | 0.568 | 0.00 | 2.0 | 3 |
-| cross_paper | 8 | 0.324 | 0.431 | 0.812 | 0.550 | 0.438 | 0.00 | 2.6 | 4 |
+| cross_paper | 8 | 0.309 | 0.430 | 0.812 | 0.550 | 0.438 | 0.00 | 2.6 | 4 |
 | table | 8 | 0.771 | 0.793 | 0.875 | 0.475 | 0.771 | 0.00 | 2.4 | 5 |
-| multi_section | 9 | 0.689 | 0.819 | 1.000 | 0.822 | 0.746 | 0.00 | 2.6 | 3 |
+| multi_section | 9 | 0.678 | 0.819 | 1.000 | 0.822 | 0.746 | 0.00 | 2.6 | 3 |
 | off_corpus | 20 | n/a | n/a | n/a | n/a | n/a | 0.00 | n/a | n/a |
 
 ## Thresholded results

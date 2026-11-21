@@ -1885,3 +1885,16 @@ class TestScoreKindHandling:
         assert code == 0
         report = (harness.reports / "gate-h.md").read_text(encoding="utf-8")
         assert "Score kind: rrf" in report
+
+
+def test_rechunked_needs_a_name_and_a_collection() -> None:
+    with pytest.raises(runner.RunError, match="--rechunked needs"):
+        runner.make_run_options("rerank_minilm", rechunked=True)
+    with pytest.raises(runner.RunError, match="--rechunked needs"):
+        runner.make_run_options("rerank_minilm", name="x", rechunked=True)
+
+    options = runner.make_run_options(
+        "rerank_minilm", name="x", collection="eval_x", rechunked=True
+    )
+    assert options.rechunked
+    assert options.config.collection == "eval_x"

@@ -187,6 +187,8 @@ def ingest(
     tokenizer: BaseTokenizer | None = None,
     collection_name: str = COLLECTION_NAME,
     hybrid: bool = False,
+    chunk_max_tokens: int | None = None,
+    merge_peers: bool = True,
 ) -> int:
     """Chunk, embed and upsert every paper; return the number of chunks indexed.
 
@@ -202,10 +204,20 @@ def ingest(
     a `Document` over the chunk's `embed_text` with the `qdrant/bm25` model and its
     default options (the same options must be used at query time). Payloads and point
     IDs are identical to the plain layout. It refuses the app collection `papers`.
+
+    `chunk_max_tokens` and `merge_peers` (Phase 10, T11) change how papers are cut, for
+    the chunk-size experiment. They are eval only and refuse the app collection too.
     """
     if hybrid and collection_name == COLLECTION_NAME:
         raise ValueError(
             f"hybrid ingestion is eval only; refusing to rebuild {COLLECTION_NAME!r}"
+        )
+    if (chunk_max_tokens is not None or not merge_peers) and (
+        collection_name == COLLECTION_NAME
+    ):
+        raise ValueError(
+            "re-chunking is eval only; refusing to rebuild "
+            f"{COLLECTION_NAME!r} with other chunk settings"
         )
     papers = _load_manifests(papers_dir)
 
@@ -232,7 +244,14 @@ def ingest(
             )
         else:
             parsed_count += 1
-        chunks = chunk_paper(paper, doc, tokenizer, paper_id=paper_id)
+        chunks = chunk_paper(
+            paper,
+            doc,
+            tokenizer,
+            paper_id=paper_id,
+            max_tokens=chunk_max_tokens,
+            merge_peers=merge_peers,
+        )
 
         # Delete first so a paper that now has fewer chunks leaves nothing stale.
         _delete_paper_points(client, paper_id, collection_name)

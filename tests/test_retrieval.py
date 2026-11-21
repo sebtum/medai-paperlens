@@ -822,6 +822,41 @@ class TestIngestHybrid:
             assert hybrid.points[pid].payload == point.payload
         assert isinstance(next(iter(plain.points.values())).vector, list)
 
+    def test_rechunking_never_touches_the_app_collection(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+
+        for kwargs in ({"chunk_max_tokens": 64}, {"merge_peers": False}):
+            with pytest.raises(ValueError, match="re-chunking is eval only"):
+                self._ingest(
+                    tmp_path,
+                    client,
+                    ingest_model,
+                    collection_name=COLLECTION_NAME,
+                    **kwargs,
+                )
+        assert client.touched == []
+
+    def test_rechunking_options_reach_an_eval_collection(
+        self, tmp_path: Path, ingest_model: MagicMock
+    ) -> None:
+        self._write_paper(tmp_path)
+        client = RecordingQdrant()
+
+        count = self._ingest(
+            tmp_path,
+            client,
+            ingest_model,
+            collection_name="eval_chunk256_merge",
+            chunk_max_tokens=64,
+            merge_peers=False,
+        )
+
+        assert count == 1
+        assert {name for _, name in client.touched} == {"eval_chunk256_merge"}
+
     def test_papers_is_never_written_in_the_hybrid_layout(
         self, tmp_path: Path, ingest_model: MagicMock
     ) -> None:

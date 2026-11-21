@@ -324,25 +324,35 @@ def chunk_paper(
     tokenizer: BaseTokenizer,
     *,
     paper_id: str,
+    max_tokens: int | None = None,
+    merge_peers: bool = True,
 ) -> list[Chunk]:
     """Chunk one paper: the manifest abstract first, then the parsed full text.
 
     `tokenizer.get_max_tokens()` is the budget for the whole embed text (see
     `make_embedder_tokenizer`). With `doc=None` only the abstract chunks are returned.
     `doc` is not modified. Raises `ValueError` if the title leaves no room for text.
+
+    `max_tokens` and `merge_peers` exist for the chunk-size experiment (Phase 10, T11,
+    eval only). `max_tokens` lowers the whole-embed-text budget below the tokenizer's
+    (it never raises it); `merge_peers=False` keeps Docling's pieces apart instead of
+    gluing neighbours under one heading. The defaults are the app's chunking.
     """
     title = " ".join(str(manifest.get("title", "")).split()).rstrip(".")
     title_key = _title_key(title)
+    total = tokenizer.get_max_tokens()
+    if max_tokens is not None:
+        if max_tokens < 1:
+            raise ValueError(f"max_tokens must be >= 1, got {max_tokens}")
+        total = min(total, max_tokens)
     reserved = tokenizer.count_tokens(f"{title}\n") if title else 0
-    budget = tokenizer.get_max_tokens() - reserved
+    budget = total - reserved
     if budget <= 0:
-        raise ValueError(
-            f"title {title!r} leaves no room within {tokenizer.get_max_tokens()} tokens"
-        )
+        raise ValueError(f"title {title!r} leaves no room within {total} tokens")
     chunker = HybridChunker(
         tokenizer=_ReservedTokenizer(inner=tokenizer, max_tokens=budget),
         serializer_provider=_MarkdownChunkingSerializerProvider(),
-        merge_peers=True,
+        merge_peers=merge_peers,
         repeat_table_header=True,
     )
     chunks: list[Chunk] = []

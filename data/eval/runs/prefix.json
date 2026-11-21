@@ -14,8 +14,8 @@
     "score_kind": "cosine",
     "reranker": null
   },
-  "golden_sha256": "7f236dd41db41e38e4b5ae79a706e1265b4ca9bb98d151b2658a5beaad2fcd24",
-  "git_hash": "0d961f8-dirty",
+  "golden_sha256": "0c62886fd4897ee84bacf8a776c44fa319ae12ef5a8f3c8338254e598467b097",
+  "git_hash": "2fe32a5-dirty",
   "chunk_count": 595,
   "questions": [
     {"id": "q001", "type": "factual", "query": "What beam size does Gaze2Report use for beam search when generating reports at test time?", "ngram_overlap": 2, "hits": [["gaze2report", "Experiment Design and Results", 8, "text", 0.79584503], ["gaze2report", "Experiment Design and Results", 14, "table", 0.78179467], ["gaze2report", "Methodology", 6, "text", 0.7733754], ["gaze2report", "Experiment Design and Results", 15, "table", 0.7644562], ["gaze2report", "Introduction", 2, "text", 0.7573353], ["gaze2report", "Methodology", 5, "text", 0.74964786], ["gaze2report", "Experiment Design and Results", 9, "text", 0.7476487], ["gaze2report", "Experiment Design and Results", 13, "table", 0.7465364], ["gaze2report", "Experiment Design and Results", 10, "text", 0.74623585], ["gaze2report", "Experiment Design and Results", 7, "text", 0.7451927], ["gaze2report", "Compliance with Ethical Standards", 17, "text", 0.7451581], ["gaze2report", "Introduction", 1, "text", 0.7443062], ["gaze2report", "Experiment Design and Results", 12, "table", 0.743629], ["gaze2report", "Abstract", 0, "text", 0.7414509], ["gaze2report", "Methodology", 3, "text", 0.7388925], ["gaze2report", "Experiment Design and Results", 11, "table", 0.72871995], ["maira_2", "Extended results > Synergy between findings generation and grounded reporting training", 57, "table", 0.7280052], ["maira_2", "RadFact metric > Implementation details", 42, "text", 0.72175425], ["maira_2", "Results > MAIRA-2 is state-of-the-art on findings generation", 17, "caption", 0.7211467], ["maira_2", "Extended results > Synergy between findings generation and grounded reporting training", 59, "table", 0.7193227]], "chunk_tokens": [225, 193, 301, 456, 332, 340, 554, 235, 530, 393, 109, 894, 241, 447, 440, 304, 486, 470, 455, 336]},

@@ -608,9 +608,18 @@ async def scan_collection(client: AsyncQdrantClient, collection: str) -> CorpusI
 
 
 def preflight_problems(
-    entries: Iterable[GoldenEntry], index: CorpusIndex, embedder: str
+    entries: Iterable[GoldenEntry],
+    index: CorpusIndex,
+    embedder: str,
+    *,
+    skip_source_chunks: bool = False,
 ) -> list[str]:
-    """Every reason the golden set cannot be scored against `index` (empty = fit)."""
+    """Every reason the golden set cannot be scored against `index` (empty = fit).
+
+    `skip_source_chunks` (Phase 10, T11) skips the checks on `source_chunks` (chunk
+    numbers) and the table-chunk check, because a re-chunked collection has other chunk
+    numbers. The labelled-section check stays: labels are by paper and section.
+    """
     problems: list[str] = []
 
     if index.chunk_count == 0:
@@ -635,6 +644,8 @@ def preflight_problems(
                     f"{label.paper_id} / {label.section!r}"
                 )
 
+        if skip_source_chunks:
+            continue
         source_types: list[str] = []
         for ref in entry.source_chunks:
             parsed = parse_source_chunk(ref)
@@ -677,8 +688,12 @@ async def preflight(
     entries: Sequence[GoldenEntry],
     client: AsyncQdrantClient,
     config: RetrievalConfig,
+    *,
+    skip_source_chunks: bool = False,
 ) -> CorpusIndex:
     """Check the golden set against the target collection before any scoring.
+
+    `skip_source_chunks` is for re-chunked eval collections (see `preflight_problems`).
 
     Raises one `PreflightError` listing all problems; otherwise returns the corpus index
     (sections per paper with chunk ids, chunk count, chunk types). A hybrid config also
@@ -687,7 +702,9 @@ async def preflight(
     payloads only.
     """
     index = await scan_collection(client, config.collection)
-    problems = preflight_problems(entries, index, config.embedder)
+    problems = preflight_problems(
+        entries, index, config.embedder, skip_source_chunks=skip_source_chunks
+    )
     if config.hybrid:
         info = await client.get_collection(config.collection)
         problems = [

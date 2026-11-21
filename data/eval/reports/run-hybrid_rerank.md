@@ -2,7 +2,7 @@
 
 Note: golden set LLM-labelled (Claude), not human-verified.
 
-- Run: `hybrid_rerank`, config `{"collection": "eval_hybrid", "config_name": "hybrid_rerank", "depth": 20, "embedder": "BAAI/bge-small-en-v1.5", "fusion": "rrf", "golden_validated": true, "hybrid": true, "prefilter_threshold": 0.6, "prefix": "Represent this sentence for searching relevant passages: ", "rerank_query": "rewritten", "reranker": "cross-encoder/ms-marco-MiniLM-L-6-v2", "reranker_disk_bytes": 890152505, "reranker_load_s": 4.47, "retrieval_threshold": 0.0, "rewrite": true, "rewrite_model": "qwen3:0.6b", "rewrite_prompt_sha256": "945eb0733345db9575c97f3d9224c9583cb474ea503318a19ef86bf7b06f5243", "score_kind": "rerank"}`, golden sha256 `7f236dd41db4`, git `0d961f8-dirty`, 595 chunks in the collection
+- Run: `hybrid_rerank`, config `{"collection": "eval_hybrid", "config_name": "hybrid_rerank", "depth": 20, "embedder": "BAAI/bge-small-en-v1.5", "fusion": "rrf", "golden_validated": true, "hybrid": true, "prefilter_threshold": 0.6, "prefix": "Represent this sentence for searching relevant passages: ", "rerank_query": "rewritten", "reranker": "cross-encoder/ms-marco-MiniLM-L-6-v2", "reranker_disk_bytes": 890152505, "reranker_load_s": 4.21, "retrieval_threshold": 0.0, "rewrite": true, "rewrite_model": "qwen3:0.6b", "rewrite_prompt_sha256": "945eb0733345db9575c97f3d9224c9583cb474ea503318a19ef86bf7b06f5243", "score_kind": "rerank"}`, golden sha256 `0c62886fd489`, git `2fe32a5-dirty`, 595 chunks in the collection
 - Score kind: rerank; threshold: 0.00; 45 on-corpus and 20 off-corpus questions
 
 ## By k (on-corpus questions)
@@ -11,9 +11,9 @@ Precision is the share of the top-k chunks that sit in a labelled section (how m
 
 | k | Recall | nDCG | MRR | Precision | Recall vs ceiling | Wrong section | Crowding | Table hit rate | Evidence tokens |
 |---|---|---|---|---|---|---|---|---|---|
-| 3 | 0.590 | 0.709 | 0.867 | 0.615 | 0.726 | 0.252 | 1.44 | 0.500 | 1525 |
-| 5 | 0.678 | 0.706 | 0.867 | 0.542 | 0.711 | 0.311 | 1.69 | 0.625 | 2557 |
-| 10 | 0.788 | 0.746 | 0.867 | 0.429 | 0.788 | 0.378 | 2.20 | 0.875 | 4974 |
+| 3 | 0.586 | 0.709 | 0.867 | 0.615 | 0.726 | 0.252 | 1.44 | 0.500 | 1525 |
+| 5 | 0.674 | 0.706 | 0.867 | 0.542 | 0.711 | 0.311 | 1.69 | 0.625 | 2550 |
+| 10 | 0.786 | 0.745 | 0.867 | 0.431 | 0.786 | 0.376 | 2.20 | 0.875 | 4950 |
 
 ## Hybrid search
 
@@ -28,10 +28,10 @@ Scores are reranker output (sigmoid, 0 to 1), not cosine. The time is one rerank
 | Reranker model | cross-encoder/ms-marco-MiniLM-L-6-v2 |
 | Query text | rewritten |
 | Cosine cut of the dense list (inside the hybrid query) | 0.60 |
-| Load time | 4.5 s |
+| Load time | 4.2 s |
 | Disk size | 890 MB |
-| Time per question, median | 4166 ms (n=65) |
-| Time per question, 90th percentile | 4629 ms |
+| Time per question, median | 1750 ms (n=65) |
+| Time per question, 90th percentile | 1951 ms |
 
 ## By question type (k=5)
 
@@ -41,9 +41,9 @@ The n-gram overlap is the longest run of words a question shares with its source
 |---|---|---|---|---|---|---|---|---|---|
 | factual | 10 | 0.850 | 0.839 | 0.850 | 0.340 | 0.850 | 0.00 | 2.9 | 4 |
 | paraphrased | 10 | 0.662 | 0.641 | 0.950 | 0.560 | 0.662 | 0.00 | 2.0 | 3 |
-| cross_paper | 8 | 0.294 | 0.427 | 0.729 | 0.475 | 0.406 | 0.00 | 2.6 | 4 |
+| cross_paper | 8 | 0.284 | 0.427 | 0.729 | 0.475 | 0.406 | 0.00 | 2.6 | 4 |
 | table | 8 | 0.958 | 0.843 | 0.833 | 0.575 | 0.958 | 0.00 | 2.4 | 5 |
-| multi_section | 9 | 0.599 | 0.757 | 0.944 | 0.778 | 0.663 | 0.00 | 2.6 | 3 |
+| multi_section | 9 | 0.588 | 0.757 | 0.944 | 0.778 | 0.663 | 0.00 | 2.6 | 3 |
 | off_corpus | 20 | n/a | n/a | n/a | n/a | n/a | 0.00 | n/a | n/a |
 
 ## Thresholded results

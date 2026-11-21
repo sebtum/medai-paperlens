@@ -385,6 +385,7 @@ class RunOptions:
     no_llm: bool = False
     langsmith: bool = False
     dataset_name: str | None = None
+    rechunked: bool = False
 
 
 def _config_dict(
@@ -406,6 +407,8 @@ def _config_dict(
         "score_kind": config.score_kind,
         "reranker": config.reranker,
     }
+    if options.rechunked:
+        data["rechunked"] = True
     if config.hybrid:
         data["hybrid"] = True
         data["prefilter_threshold"] = config.prefilter_threshold
@@ -528,7 +531,9 @@ async def run_command(options: RunOptions, services: Services) -> list[str]:
     )
     client = services.client_factory()
 
-    index = await preflight(entries, client, config)
+    index = await preflight(
+        entries, client, config, skip_source_chunks=options.rechunked
+    )
     logger.info(
         "Pre-flight passed: %d chunks in %r, %d golden questions",
         index.chunk_count,
@@ -651,6 +656,7 @@ def make_run_options(
     depth: int | None = None,
     rerank_query: RerankQuery | None = None,
     reranker: str | None = None,
+    rechunked: bool = False,
 ) -> RunOptions:
     """Resolve a named config plus overrides into `RunOptions`.
 
@@ -668,6 +674,11 @@ def make_run_options(
         )
         if value is not None
     ]
+    if rechunked and not (name and collection):
+        raise RunError(
+            "--rechunked needs --name and --collection (otherwise the run would "
+            f"overwrite {config_name}.json or read the app collection)"
+        )
     if changed and not name:
         raise RunError(
             f"{', '.join(changed)} change(s) the config, so --name is required "
@@ -706,6 +717,7 @@ def make_run_options(
         no_llm=no_llm,
         langsmith=langsmith,
         dataset_name=dataset_name,
+        rechunked=rechunked,
     )
 
 

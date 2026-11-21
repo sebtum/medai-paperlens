@@ -145,14 +145,14 @@ Score chunks by keywords as well, merge both lists, and test whether that plus t
   - [x] ADR-0028 records adopted or not. **If adopted, stop and re-plan app integration** (re-ingest `papers`, search change, Compose).
 - Note: done 2026-11-20. Hybrid not adopted: `hybrid_rerank` against `rerank_minilm` is +0.023, range -0.0237 to +0.0840, A stays (ADR-0028, Proposed). Alone, `hybrid` is +0.132 over `prefix` and +0.014 over `rerank_minilm` (not a safe difference). Labelling: 48 candidates, 2 added, 46 rejected; golden hash now `7f236dd41db4`, 161 labels. Reports: `3-execute-T10-spike.md`, `3-execute-T10-labels.md`, `3-execute-T10.md`.
 
-### [ ] T11: Chunk-size trigger
+### [x] T11: Chunk-size trigger
 Check whether "right paper, wrong section" is still above 25 % of top-5 hits after the reranker.
 - Files: `data/eval/reports/*.md`, a Note here
 - Depends on: T7, T10 · Group: G7
 - Acceptance criteria:
-  - [ ] `wrong_section_share` at k = 5 for the adopted config is reported (it is 36 % today).
-  - [ ] At or below 25 %: recorded, done. Above 25 %: **stop and detail the experiment with the owner** (token budget 256, `merge_peers` on and off, two collections, a pre-flight mode that skips the source-chunk checks because re-chunking changes chunk numbers).
-- Note:
+  - [x] `wrong_section_share` at k = 5 for the adopted config is reported (it is 36 % today).
+  - [x] At or below 25 %: recorded, done. Above 25 %: **stop and detail the experiment with the owner** (token budget 256, `merge_peers` on and off, two collections, a pre-flight mode that skips the source-chunk checks because re-chunking changes chunk numbers).
+- Note: Done 2026-11-20/21. Share was 28.4 % (above 25 %), so the full experiment ran after owner approval: cap 256 tokens, merge on (1,258 chunks) and off (1,961 chunks), eval-only collections, `ingest --chunk-tokens N --no-merge-peers` and `run --rechunked`. Not adopted: merge +0.020 [-0.0323, +0.0840], no-merge +0.014 [-0.0402, +0.0772] (multi_section clearly worse), A stays for both. Share fell to 25.8 %, still above the limit. Same quality with half the evidence text (2556 to 1282 tokens) and half the reranker time (1592 to 795 ms), to be judged in Phase 11. Labelling: 20 candidates, 3 added, 17 rejected; golden hash now `0c62886fd489`, 164 labels; kept runs re-run on it (bge and medcpt runs stay on `cc08395a87ca`, owner decision). Recorded in the ADR-0028 addendum and `data/eval/CHANGELOG.md`. Reports: `data/eval/reports/run-chunk256_*.md`, `compare-chunk256_*-vs-rerank_minilm.md`.
 
 ### [ ] T12: Docs
 - Files: `README.md`, `CLAUDE.md`, `docs/roadmap.md`, `docs/architecture.md`, `docs/adr/0023-golden-set-methodology.md`, ADR index
