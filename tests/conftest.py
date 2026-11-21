@@ -112,16 +112,17 @@ def _no_real_reranker(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     Unset `RERANKER_MODEL` now means the default MiniLM model (ADR-0026), so the
     variable is set to `none` (off) for every test; a test that wants the default or a
     model name sets or clears it itself. On top of that the `CrossEncoder` constructor
-    used by `get_reranker` raises, so even a model name never reaches a download. The
-    `get_reranker` singleton cache is emptied before and after.
+    used by `get_reranker` raises, so even a model name never reaches a download (the
+    dependency turns that into an `UnavailableReranker`). The `get_reranker` cache is
+    emptied before and after.
     """
     from app.retrieval import rerank
 
     monkeypatch.setenv("RERANKER_MODEL", "none")
     monkeypatch.setattr(rerank, "CrossEncoder", _refuse_real_cross_encoder)
-    rerank.get_reranker.cache_clear()
+    rerank.reset_reranker_cache()
     yield
-    rerank.get_reranker.cache_clear()
+    rerank.reset_reranker_cache()
 
 
 @pytest.fixture

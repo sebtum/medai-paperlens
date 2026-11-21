@@ -304,6 +304,11 @@ fresh start now downloads and uses MiniLM.
   startup, so the first request after a start pays the load time (4.1 s measured with
   the files already cached, more with a download). No warm-up was decided. If the first
   request matters, a startup warm-up is a possible follow-up.
+- **A model that cannot be loaded does not fail the request.** If the load fails (first
+  start without network, wrong `RERANKER_MODEL`), `get_reranker()` returns a stand-in
+  whose `score()` raises, so the rerank step takes its normal fallback (vector order cut
+  to 5, `rerank_fallback` set). The failure is logged and remembered for 60 s, so a
+  broken model is not retried on every request.
 - **Switch off.** `RERANKER_MODEL` unset means MiniLM. An empty value or `none` (any
   case) switches the step to a plain cut to the first 5 hits. The step and the stream
   events stay the same either way (6 steps). Another model name in `RERANKER_MODEL`

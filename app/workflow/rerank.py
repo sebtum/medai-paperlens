@@ -1,7 +1,7 @@
 import logging
 
 from app.models.query import Citation
-from app.retrieval.rerank import Reranker, rerank_passage
+from app.retrieval.rerank import Reranker, UnavailableReranker, rerank_passage
 from app.workflow.state import WorkflowState
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,14 @@ def make_rerank_node(reranker: Reranker | None, *, keep: int = RERANK_KEEP):
                     f"for {len(citations)} passages"
                 )
         except Exception:
-            logger.exception("rerank_node: reranking failed, keeping vector order")
+            if isinstance(reranker, UnavailableReranker):
+                # The load failure was logged with its traceback when it happened.
+                logger.warning(
+                    "rerank_node: %r unavailable, keeping vector order",
+                    reranker.model_name,
+                )
+            else:
+                logger.exception("rerank_node: reranking failed, keeping vector order")
             return _cut(citations, keep, fallback=True)
 
         # Highest score first; equal scores keep the vector order (sort is stable).

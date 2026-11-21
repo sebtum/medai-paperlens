@@ -57,7 +57,7 @@ A small reranker interface plus a sentence-transformers version, built like the 
 - Depends on: — · Group: G1
 - Acceptance criteria:
   - [x] `Reranker` Protocol: `async score(query, passages) -> list[float]` and `model_name`. `CrossEncoderReranker` runs in a thread (`asyncio.to_thread`) with sigmoid output.
-  - [x] `get_reranker_model_name()` reads `RERANKER_MODEL` (empty or `none` = off). `get_reranker() -> Reranker | None` is an `lru_cache` singleton and the FastAPI dependency.
+  - [x] `get_reranker_model_name()` reads `RERANKER_MODEL` (empty or `none` = off). `get_reranker() -> Reranker | None` is a process-wide singleton (no `lru_cache`: a failed load becomes an `UnavailableReranker`, remembered for 60 s, and one request loads at a time) and the FastAPI dependency.
   - [x] `rerank_passage()` as in Decisions.
   - [x] `FakeReranker` in conftest. An autouse fixture ensures no test loads a real model.
   - [x] One manual check (not in CI) that all three model IDs load with `CrossEncoder` and score a pair. Exact IDs and revisions are recorded in Note.

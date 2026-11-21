@@ -1,5 +1,6 @@
 import threading
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -8,8 +9,10 @@ from conftest import FakeReranker
 from app.retrieval import rerank
 from app.retrieval.rerank import (
     DEFAULT_RERANKER_MODEL,
+    RERANKER_RETRY_SECONDS,
     CrossEncoderReranker,
     Reranker,
+    UnavailableReranker,
     get_reranker,
     get_reranker_model_name,
     rerank_passage,
@@ -135,6 +138,7 @@ def test_get_reranker_unset_never_loads_a_real_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Unset now means the default model; only the autouse block stops the download.
+    # Its AssertionError is not a load error, so it reaches the test (a loud tripwire).
     monkeypatch.delenv("RERANKER_MODEL")
     with pytest.raises(AssertionError, match="FakeReranker"):
         get_reranker()
@@ -173,6 +177,103 @@ def test_autouse_fixture_blocks_real_model_load(
     monkeypatch.setenv("RERANKER_MODEL", "org/some-reranker")
     with pytest.raises(AssertionError, match="FakeReranker"):
         get_reranker()
+
+
+def test_get_reranker_does_not_hide_a_programming_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RERANKER_MODEL", "org/some-reranker")
+    monkeypatch.setattr(
+        rerank, "CrossEncoder", MagicMock(side_effect=TypeError("bad kwarg"))
+    )
+    with pytest.raises(TypeError):
+        get_reranker()
+    # The lock is released after the error: a later call can load normally.
+    monkeypatch.setattr(rerank, "CrossEncoder", lambda name, **kw: _FakeCrossEncoder())
+    assert isinstance(get_reranker(), CrossEncoderReranker)
+
+
+async def test_get_reranker_does_not_wait_for_a_load_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RERANKER_MODEL", "org/slow")
+    seen: list[Any] = []
+
+    def slow_load(name: str, **kwargs: Any) -> _FakeCrossEncoder:
+        seen.append(get_reranker())  # a second request arrives mid-load
+        return _FakeCrossEncoder()
+
+    monkeypatch.setattr(rerank, "CrossEncoder", slow_load)
+
+    loader = get_reranker()
+
+    assert isinstance(loader, CrossEncoderReranker)
+    assert isinstance(seen[0], UnavailableReranker)
+    with pytest.raises(RuntimeError, match="org/slow"):
+        await seen[0].score("q", ["a"])
+    # The mid-load stand-in was not remembered as a failure.
+    assert get_reranker() is loader
+
+
+async def test_get_reranker_load_failure_returns_a_failing_reranker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RERANKER_MODEL", "org/missing")
+    monkeypatch.setattr(
+        rerank, "CrossEncoder", MagicMock(side_effect=OSError("no network"))
+    )
+
+    reranker = get_reranker()
+
+    assert isinstance(reranker, UnavailableReranker)
+    assert reranker.model_name == "org/missing"
+    with pytest.raises(RuntimeError, match="org/missing"):
+        await reranker.score("q", ["a", "b"])
+
+
+def test_get_reranker_remembers_a_failed_load_then_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(rerank.time, "monotonic", lambda: clock[0])
+    monkeypatch.setenv("RERANKER_MODEL", "org/flaky")
+    attempts: list[int] = []
+
+    def flaky(name: str, **kwargs: Any) -> _FakeCrossEncoder:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError("offline")
+        return _FakeCrossEncoder()
+
+    monkeypatch.setattr(rerank, "CrossEncoder", flaky)
+
+    first = get_reranker()
+    clock[0] += RERANKER_RETRY_SECONDS - 1
+    second = get_reranker()  # inside the window: no new load attempt
+    assert isinstance(first, UnavailableReranker)
+    assert second is first
+    assert len(attempts) == 1
+
+    clock[0] += 2
+    third = get_reranker()  # window over: loads, and the success is kept
+    assert isinstance(third, CrossEncoderReranker)
+    assert get_reranker() is third
+    assert len(attempts) == 2
+
+
+def test_get_reranker_failure_does_not_stick_to_another_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RERANKER_MODEL", "org/broken")
+    monkeypatch.setattr(rerank, "CrossEncoder", MagicMock(side_effect=OSError("gone")))
+    assert isinstance(get_reranker(), UnavailableReranker)
+
+    monkeypatch.setattr(rerank, "CrossEncoder", lambda name, **kw: _FakeCrossEncoder())
+    monkeypatch.setenv("RERANKER_MODEL", "org/working")
+    reranker = get_reranker()
+
+    assert isinstance(reranker, CrossEncoderReranker)
+    assert reranker.model_name == "org/working"
 
 
 # --- rerank_passage ----------------------------------------------------------

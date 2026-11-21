@@ -56,7 +56,12 @@ def _to_response(state: WorkflowState, reranker: Reranker | None) -> QueryRespon
         debug={
             "route": state["route"],
             "rewritten": state["rewritten"],
-            "rerank_model": reranker.model_name if reranker is not None else None,
+            # No model ran when the step fell back, so none is named.
+            "rerank_model": (
+                reranker.model_name
+                if reranker is not None and not state["rerank_fallback"]
+                else None
+            ),
             "rerank_top_score": state["rerank_top_score"],
             "rerank_fallback": state["rerank_fallback"],
         },

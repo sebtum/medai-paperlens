@@ -43,7 +43,7 @@ Gates:
 | `mypy app/` | no issues, 43 files |
 | `bandit` on `rerank.py` | clean |
 
-- Details: the autouse fixture `_no_real_reranker` clears `RERANKER_MODEL`, replaces `app.retrieval.rerank.CrossEncoder` with a function that raises, and empties the `get_reranker` cache before and after each test. A test that needs a built reranker patches `CrossEncoder` itself. Mid-run, one T1 test (`test_prompt_hash_is_the_hash_of_the_real_prompt`) failed once because T1 was still changing files. It passed in the later full runs.
+- Details: the autouse fixture `_no_real_reranker` clears `RERANKER_MODEL`, replaces `app.retrieval.rerank.CrossEncoder` with a function that raises, and calls `reset_reranker_cache()` before and after each test (it replaced `get_reranker.cache_clear()`). The refusal is an `AssertionError`, which is not a load error, so a test that reaches it fails loudly. A test that needs a built reranker patches `CrossEncoder` itself. Mid-run, one T1 test (`test_prompt_hash_is_the_hash_of_the_real_prompt`) failed once because T1 was still changing files. It passed in the later full runs.
 - Details: mypy needed `pairs: list[Any]` in `_score_sync`. The library types its pairs as an invariant list of a union, which a plain `list[tuple[str, str]]` does not match.
 
 ### Manual model check

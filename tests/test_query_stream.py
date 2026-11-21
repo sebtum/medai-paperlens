@@ -3,12 +3,14 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
+import pytest
 from asgi_lifespan import LifespanManager
 from conftest import TEST_VECTOR_DIM, FakeLlm, FakeReranker
 from httpx import ASGITransport, AsyncClient, Response
 
 from app.llm.factory import get_llm_provider
 from app.main import app
+from app.retrieval import rerank
 from app.retrieval.client import get_async_client
 from app.retrieval.embedding import get_embedding_provider
 from app.retrieval.rerank import Reranker, get_reranker
@@ -53,6 +55,7 @@ async def _post(
     qdrant_error: Exception | None = None,
     body: dict | None = None,
     reranker: Reranker | None = None,
+    real_get_reranker: bool = False,
 ) -> Response:
     qdrant = AsyncMock()
     qdrant.query_points.return_value.points = points or []
@@ -64,7 +67,8 @@ async def _post(
     app.dependency_overrides[get_async_client] = lambda: qdrant
     app.dependency_overrides[get_embedding_provider] = lambda: embedder
     app.dependency_overrides[get_llm_provider] = lambda: fake_llm
-    app.dependency_overrides[get_reranker] = lambda: reranker
+    if not real_get_reranker:
+        app.dependency_overrides[get_reranker] = lambda: reranker
     try:
         async with (
             LifespanManager(app) as manager,
@@ -324,9 +328,58 @@ async def test_stream_rerank_error_falls_back_and_still_answers() -> None:
         "Paper 3",
     ]
     assert final["grounded"] is True
-    assert final["debug"]["rerank_model"] == "fake-reranker"
+    assert final["debug"]["rerank_model"] is None  # no model ran
     assert final["debug"]["rerank_top_score"] is None
     assert final["debug"]["rerank_fallback"] is True
+
+
+async def test_stream_survives_reranker_load_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real `get_reranker`, model name set, and the CrossEncoder load fails (the
+    # load raises OSError): the request must still succeed.
+    monkeypatch.setenv("RERANKER_MODEL", "org/missing-model")
+    monkeypatch.setattr(
+        rerank, "CrossEncoder", MagicMock(side_effect=OSError("no network"))
+    )
+    response = await _post(
+        "/query/stream",
+        FakeLlm(),
+        points=_ranked_points(8),
+        real_get_reranker=True,
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    assert "error" not in [e for e, _ in events]
+    final = events[-1][1]
+    assert [c["title"] for c in final["citations"]] == [
+        f"Paper {n}" for n in range(1, 6)
+    ]
+    assert final["grounded"] is True
+    assert final["debug"]["rerank_model"] is None
+    assert final["debug"]["rerank_top_score"] is None
+    assert final["debug"]["rerank_fallback"] is True
+
+
+async def test_query_survives_reranker_load_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RERANKER_MODEL", "org/missing-model")
+    monkeypatch.setattr(
+        rerank, "CrossEncoder", MagicMock(side_effect=OSError("no network"))
+    )
+    for _ in range(2):  # the second request reuses the remembered failure
+        response = await _post(
+            "/query", FakeLlm(), points=_ranked_points(8), real_get_reranker=True
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert [c["title"] for c in body["citations"]] == [
+            f"Paper {n}" for n in range(1, 6)
+        ]
+        assert body["debug"]["rerank_fallback"] is True
 
 
 async def test_query_returns_rerank_debug_fields() -> None:

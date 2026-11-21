@@ -136,7 +136,7 @@ question
  → list[Citation] + confidence score (cosine of the vector top hit)
 ```
 
-The reranker is `cross-encoder/ms-marco-MiniLM-L-6-v2` by default (`RERANKER_MODEL`; empty or `none` switches it off, and the step then only keeps the first 5 hits). It is loaded on the first request, not at startup. If it fails, the vector order is kept and `debug.rerank_fallback` is set (ADR-0026). SSE `citations` is sent when the rerank step ends.
+The reranker is `cross-encoder/ms-marco-MiniLM-L-6-v2` by default (`RERANKER_MODEL`; empty or `none` switches it off, and the step then only keeps the first 5 hits). It is loaded on the first request, not at startup. If it fails, or cannot be loaded (a failed load is remembered for 60 s; only one request loads the model, others get vector order meanwhile), the vector order is kept, `debug.rerank_fallback` is set and `debug.rerank_model` is `null` (ADR-0026). SSE `citations` is sent when the rerank step ends.
 
 Hybrid search (dense plus BM25 sparse, merged by RRF) and smaller chunks were measured as eval-only experiments and are not part of the app (ADR-0028). The app collection `papers` holds dense vectors only.
 
