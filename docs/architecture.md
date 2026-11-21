@@ -68,7 +68,8 @@ FastAPI Backend
 LangGraph Workflow
  ├── classify_node   — phrase-pattern safety filter
  ├── rewrite_node    — Ollama-backed query rewriter (falls back to original on error)
- ├── retrieve_node   — Qdrant vector search over paper corpus
+ ├── retrieve_node   — Qdrant vector search over paper corpus (top 20)
+ ├── rerank_node     — cross-encoder re-scores the 20 and keeps the best 5
  ├── generate_node   — Ollama LLM synthesis over retrieved evidence
  └── validate_node   — grounding check (citations present + answer non-empty)
  ↓
@@ -114,7 +115,7 @@ Uses explicit, named nodes instead of a fully autonomous agent.
 ```text
 START → classify_node
   ↓ (unsafe) → END  [returns refusal, grounded=false]
-  ↓ (safe)   → rewrite_node → retrieve_node → generate_node → validate_node → END
+  ↓ (safe)   → rewrite_node → retrieve_node → rerank_node → generate_node → validate_node → END
 ```
 
 State is a `WorkflowState` TypedDict passed between nodes.
@@ -130,9 +131,14 @@ chunks them with Docling's HybridChunker and indexes one Qdrant point per chunk
 question
  → embed via SentenceTransformer (BAAI/bge-small-en-v1.5 default),
    with a query prefix in front of the question (BGE models; documents are not prefixed)
- → Qdrant top-k cosine search
- → list[Citation] + confidence score
+ → Qdrant cosine search, top 20 (RETRIEVE_DEPTH)
+ → rerank_node: cross-encoder scores (rewritten question, passage) pairs, keeps the best 5
+ → list[Citation] + confidence score (cosine of the vector top hit)
 ```
+
+The reranker is `cross-encoder/ms-marco-MiniLM-L-6-v2` by default (`RERANKER_MODEL`; empty or `none` switches it off, and the step then only keeps the first 5 hits). It is loaded on the first request, not at startup. If it fails, the vector order is kept and `debug.rerank_fallback` is set (ADR-0026). SSE `citations` is sent when the rerank step ends.
+
+Hybrid search (dense plus BM25 sparse, merged by RRF) and smaller chunks were measured as eval-only experiments and are not part of the app (ADR-0028). The app collection `papers` holds dense vectors only.
 
 Each retrieved chunk becomes one citation with paper metadata (title, authors, year, DOI), section path, page, chunk index and the chunk text as excerpt.
 
@@ -140,11 +146,12 @@ The query prefix is set by `EMBEDDING_QUERY_PREFIX`. Unset, `BAAI/bge-*` models 
 
 ### Evaluation Layer
 
-Retrieval is measured, not assumed (ADR-0023, ADR-0024, ADR-0025). The eval covers retrieval only, with no generation.
+Retrieval is measured, not assumed (ADR-0023, ADR-0024, ADR-0025, ADR-0026, ADR-0028). The eval covers retrieval only, with no generation.
 
 ```text
-data/eval/golden.jsonl  (50 questions, labels = paper + section + grade)
- → runner: optional cached rewrite → embed → Qdrant top 20 at threshold 0
+data/eval/golden.jsonl  (65 questions, 164 labels = paper + section + grade)
+ → runner: optional cached rewrite → embed → Qdrant top 20 at threshold 0 (or dense + BM25 by RRF)
+ → optional rerank (cross-encoder, depth 20, keep 5)
  → data/eval/runs/<name>.json   (ranked hits and scores, no paper text)
  → metrics (Recall@k, MRR, nDCG@k), paired bootstrap, threshold curve
  → data/eval/reports/*.md
@@ -153,9 +160,11 @@ data/eval/golden.jsonl  (50 questions, labels = paper + section + grade)
 - **Code:** core logic in `app/evaluation/` (`metrics`, `golden`, `target`, `compare`, `report`, `runner`, `authoring`, `langsmith_sync`, `langsmith_eval`), so mypy and bandit cover it. `scripts/eval_retrieval.py` and `scripts/sync_golden.py` are thin CLIs.
 - **One collection per embedder.** `papers` is the app collection. Other embedders are ingested into `eval_<model-slug>` (`scripts/ingest.py --collection`), so a sweep never overwrites the app index. A pre-flight check fails the run if a label points at a missing section or the collection's `embedding_model` differs from the run's.
 - **Git is the source of truth for the golden set.** LangSmith holds a synced copy (dataset `paperlens-retrieval-golden`) and optional experiments. It is opt-in: the local run, the tests and CI never need an account.
+- **Eval-only collections.** `eval_hybrid` (dense plus BM25 sparse vector, `ingest --hybrid`) and `eval_chunk256_merge` / `eval_chunk256_nomerge` (`ingest --chunk-tokens 256`, with and without merging neighbours) are built beside `papers`; the ingest options refuse the app collection. `run --rechunked` skips the source-chunk-number checks for a re-cut collection.
+- **Score kinds.** Each run records `score_kind` (`cosine`, `rerank`, `rrf`). Only cosine runs are cut at the 0.6 threshold; reranker (0..1) and RRF scores are not cosine values, so they are not cut.
 - **Rewrites are cached** in `data/eval/rewrites.jsonl`, so every sweep reuses the same rewrites and reproduces without Ollama.
 - **Query prefix in the eval.** A config sets its own prefix. The eval embedder is built with an empty provider prefix, so the app default cannot add a second one.
-- **Limits:** the golden set is LLM-labelled (Claude), not human-verified, and has only 5 off-corpus questions. Reports say so.
+- **Limits:** the golden set is LLM-labelled (Claude), not human-verified, and has 20 off-corpus questions (15 added in Phase 10 as near misses). Reports say so.
 
 ### LLM Provider
 

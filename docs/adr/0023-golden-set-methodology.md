@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (Phase 9 Plan).
+Accepted (Phase 9 Plan). Amended in Phase 10 (golden set v2, see the amendment below).
 
 ## Context
 
@@ -115,6 +115,50 @@ The decision above stands. These details were settled while building and running
 - **Outcome.** The decision rule was applied in Phase 9 and its results are recorded in
   ADR-0025 (the BGE query prefix was adopted; threshold, `top_k`, rewrite and embedder
   were kept).
+
+## Amendment: golden set v2 (Phase 10, 2026-11-18 to 2026-11-21)
+
+The decision above stands. Phase 10 added a reranker and two experiments (hybrid search,
+chunk size), and these details were settled while measuring them. The numbers are in
+ADR-0026 and ADR-0028, the full record is in `data/eval/CHANGELOG.md`.
+
+- **Near-miss off-corpus questions.** v2 adds 15 off-corpus questions (q051 to q065), so
+  `off_corpus` goes from 5 to 20 and the set from 50 to 65 questions. They are medical-AI
+  questions that look like they belong to the 10 papers but are not answered by them (same
+  modality but another task, a model or dataset the corpus does not cover, a topic next to a
+  covered paper). They were written before any reranker result existed and checked against the
+  corpus text. Reason: with 5 off-corpus questions a refusal rule could not be judged, and a
+  cosine threshold was already known to be inert. `QUOTAS` and the two golden tests changed.
+  q001 to q050 were not touched.
+- **Labelling pass on the top 5 of every new run.** An unlabelled section counts as
+  irrelevant, so a run that retrieves a new section can look worse for a reason that is a
+  missing label. After each new group of runs, the unlabelled sections in their top 5 (not
+  the top 10 of Phase 9; reranked and fused scores are not cut at a threshold) are read
+  against the question text only, never by score or rank, and judged by the Phase 9
+  standard. Three passes ran: the reranker runs (241 candidates, 9 added), the hybrid runs
+  (48 candidates, 2 added) and the chunk-size runs (20 candidates, 3 added). The set is now
+  164 labels (84 at grade 2, 80 at grade 1). No label was removed or re-graded. The same
+  author wrote the questions and judged the sections, so this is not a blind pass.
+- **`data/eval/adjudicated.jsonl`.** Every section that was read and rejected is stored with
+  its question and a one-line reason, so later passes skip it and the judgement can be
+  audited. It holds our own text only.
+- **Hash changes and re-runs.** Each pass changes the golden hash (`cc08395a87ca`, then
+  `7f236dd41db4`, now `0c62886fd489`). Run records carry the hash they were scored on, and
+  numbers are compared only within one hash. After a pass, the runs that are still used are
+  re-run on the new file. The bge-reranker and MedCPT runs stay on `cc08395a87ca` (owner
+  decision: those models are not used), and the numbers quoted in ADR-0025 and ADR-0026 come
+  from earlier hashes.
+- **Score kinds.** A run records its `score_kind`: `cosine` (dense search), `rerank`
+  (reranker, 0 to 1 by sigmoid) or `rrf` (hybrid fusion). Only cosine runs are cut at the
+  0.6 threshold; the other two are not cosine values and are not cut. Runs saved before
+  Phase 10 count as cosine.
+- **Gate curve.** For a refusal rule on the reranker's top-1 score, a curve shows, per
+  cut-off t, how many of the 20 off-corpus questions are refused (the gain) and how many of
+  the 45 on-corpus questions would be refused too (the cost). It is measured only; no rule
+  was adopted (ADR-0026).
+- **Decision rule unchanged.** nDCG@5, paired bootstrap, stratified by type, no type clearly
+  worse. Phase 10 applied it to the reranker (adopted), hybrid search and chunk size (neither
+  adopted).
 
 ## Alternatives Considered
 

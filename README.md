@@ -8,7 +8,7 @@ It answers research questions over a curated corpus of full-text public medical 
 
 - **Real document RAG.** Full-text PDFs are parsed into structure-aware chunks, not abstracts, so retrieval has to find the right passage inside a paper rather than the right paper among a handful.
 - **Grounded answers.** Each claim points back to a paper, section and page, and a grounding validator checks that the cited evidence supports the answer.
-- **Retrieval quality.** Dense vector search is combined with keyword search and a cross-encoder reranker, so that exact model names and acronyms (MAIRA-2, CONCH, Med-PaLM M) are found as reliably as paraphrased concepts.
+- **Retrieval quality.** Dense vector search fetches 20 chunks and a cross-encoder reranker keeps the best 5. Keyword (hybrid) search was measured too and not adopted, because it showed no safe gain on top of the reranker ([ADR-0028](docs/adr/0028-hybrid-search.md)).
 - **Measurable evaluation.** An LLM-labelled golden question set (written by Claude, not human-verified) drives retrieval metrics (Recall@k, MRR, nDCG@k) across configurations. An LLM-as-judge scores faithfulness, citation correctness and relevance, and is itself calibrated against human ratings (planned). The safety filter is evaluated for precision and recall. Datasets, experiments and traces are tracked in LangSmith.
 - **Responsive UX on modest hardware.** Answers stream token by token with visible pipeline steps. A small local model is the default, and a hosted model is available as an opt-in.
 - **Local-first and safe by design.** Runs fully offline with Ollama. External providers are opt-in only. Public papers only, never patient data.
@@ -37,7 +37,7 @@ This project does not provide:
 ```
 Ingestion
  arXiv PDFs → document parsing → structure-aware chunks
-            → embeddings (+ keyword index) → Qdrant
+            → embeddings → Qdrant
 
 Query
  Streamlit UI  (streamed answer + citations)
@@ -47,8 +47,8 @@ Query
  LangGraph Workflow
   ├── Query Classifier    — safety filter for personal medical advice
   ├── Query Rewriter      — retrieval query improvement
-  ├── Paper Retriever     — hybrid search over chunks
-  ├── Reranker            — cross-encoder relevance scoring
+  ├── Paper Retriever     — dense search, top 20 chunks
+  ├── Reranker            — cross-encoder re-scores the 20, keeps the best 5
   ├── Answer Generator    — LLM synthesis over retrieved evidence
   └── Grounding Validator — checks the answer against its citations
   ↓
@@ -65,7 +65,7 @@ Evaluation
 - Python 3.14
 - FastAPI
 - LangGraph
-- Qdrant (dense + sparse vectors)
+- Qdrant (dense vectors; the eval-only hybrid collection adds a sparse BM25 vector)
 - Ollama (local LLM, default model: `qwen3:0.6b`), with an opt-in Gemini provider
 - Docling (PDF parsing and chunking)
 - sentence-transformers (embeddings and cross-encoder reranking)
@@ -142,14 +142,16 @@ changed. See [ADR-0020](docs/adr/0020-pdf-parser.md),
 
 ## Retrieval evaluation
 
-A golden set of 50 questions (`data/eval/golden.jsonl`) scores retrieval by
+A golden set of 65 questions and 164 labels (`data/eval/golden.jsonl`: 45 on-corpus, 20 off-corpus) scores retrieval by
 Recall@k, MRR and nDCG@k over `(paper, section)` labels. The runner needs Qdrant with the
 full-text corpus ingested (its pre-flight check fails on a mismatch), and Ollama only
 to create new query rewrites. **The golden set is LLM-labelled:
 Claude wrote and labelled it, and no human has verified it.** Treat the numbers as
 indicative, not as proof. Method: [ADR-0023](docs/adr/0023-golden-set-methodology.md),
 [ADR-0024](docs/adr/0024-eval-dataset-versioning-and-runner.md); outcome and the retrieval
-defaults it led to: [ADR-0025](docs/adr/0025-retrieval-defaults-after-eval.md).
+defaults it led to: [ADR-0025](docs/adr/0025-retrieval-defaults-after-eval.md); reranker:
+[ADR-0026](docs/adr/0026-reranker.md); hybrid search and chunk size (both measured, not
+adopted): [ADR-0028](docs/adr/0028-hybrid-search.md).
 
 ```powershell
 # Run one named config: pre-flight check, retrieve, write a run file and a report
@@ -166,14 +168,29 @@ defaults it led to: [ADR-0025](docs/adr/0025-retrieval-defaults-after-eval.md).
 # The bge_base config needs its own collection (the `papers` collection stays untouched)
 $env:EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
 .\.venv\Scripts\python.exe -m scripts.ingest --collection eval_bge-base-en-v1.5
+
+# Phase 10 experiments, all eval only (each refuses the app collection `papers`)
+.\.venv\Scripts\python.exe -m scripts.ingest --collection eval_hybrid --hybrid          # dense + BM25 sparse vector
+.\.venv\Scripts\python.exe -m scripts.ingest --collection eval_chunk256_merge --chunk-tokens 256
+.\.venv\Scripts\python.exe -m scripts.ingest --collection eval_chunk256_nomerge --chunk-tokens 256 --no-merge-peers
+.\.venv\Scripts\python.exe -m scripts.eval_retrieval run --config rerank_minilm --collection eval_chunk256_merge --name chunk256_merge --rechunked --no-llm
 ```
 
-| Config | Embedder | Collection | Query prefix | Rewrite |
-|---|---|---|---|---|
-| `baseline` | `bge-small-en-v1.5` | `papers` | none | on |
-| `no_rewrite` | `bge-small-en-v1.5` | `papers` | none | off |
-| `prefix` | `bge-small-en-v1.5` | `papers` | BGE instruction | on |
-| `bge_base` | `bge-base-en-v1.5` | `eval_bge-base-en-v1.5` | none | on |
+`run` also takes `--depth N` (candidates fetched before the cut), `--rerank-query original`
+and `--reranker <model>`; each needs `--name` so it does not overwrite the config's run.
+`--rechunked` skips the source-chunk-number checks, because re-chunking changes the numbers
+(the labelled-section check stays).
+
+| Config | Embedder | Collection | Query prefix | Rewrite | Search | Reranker |
+|---|---|---|---|---|---|---|
+| `baseline` | `bge-small-en-v1.5` | `papers` | none | on | dense | none |
+| `no_rewrite` | `bge-small-en-v1.5` | `papers` | none | off | dense | none |
+| `prefix` | `bge-small-en-v1.5` | `papers` | BGE instruction | on | dense | none |
+| `bge_base` | `bge-base-en-v1.5` | `eval_bge-base-en-v1.5` | none | on | dense | none |
+| `rerank_minilm` (the app today) | `bge-small-en-v1.5` | `papers` | BGE instruction | on | dense, top 20 | MiniLM |
+| `rerank_bge`, `rerank_medcpt` | same | `papers` | BGE instruction | on | dense, top 20 | bge-reranker-base, MedCPT (not used) |
+| `hybrid` | `bge-small-en-v1.5` | `eval_hybrid` | BGE instruction | on | dense + BM25, RRF | none |
+| `hybrid_rerank` | same | `eval_hybrid` | BGE instruction | on | dense + BM25, RRF | MiniLM |
 
 Where things live (all committed, none holds paper text):
 - `data/eval/golden.jsonl`: the questions and labels. `data/eval/CHANGELOG.md`: what
@@ -229,6 +246,7 @@ LLM_PROVIDER=ollama
 QDRANT_URL=http://localhost:6333
 EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
 OLLAMA_NUM_CTX=8192
+RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 # EMBEDDING_QUERY_PREFIX=   (optional, see below)
 ```
 
@@ -242,6 +260,13 @@ OLLAMA_NUM_CTX=8192
   Set it (to an empty string to switch the prefix off) to override. A non-BGE model
   with its own query instruction needs it set. It is a plain setting, not a secret
   ([ADR-0025](docs/adr/0025-retrieval-defaults-after-eval.md)).
+- `RERANKER_MODEL`: the cross-encoder that re-scores the 20 retrieved chunks and keeps
+  the best 5 (the "rerank" step). Unset: `cross-encoder/ms-marco-MiniLM-L-6-v2`. Empty or
+  `none`: reranking off, the step only keeps the first 5 hits. The model (91 MB of weights)
+  downloads from Hugging Face on first use into the Hugging Face cache (the shared
+  `huggingface_cache` volume under Compose) and loads on the first request, so that
+  request is slower; there is no warm-up at startup. On the evaluation machine reranking
+  20 chunks took a median of 1.6 s ([ADR-0026](docs/adr/0026-reranker.md)).
 - `OLLAMA_NUM_CTX`: context window sent to Ollama on every call, warmup included,
   so the model is not reloaded on the first query. It has to fit the retrieved chunks.
 
@@ -270,11 +295,11 @@ decision record. A hosted Gemini provider is available opt-in behind
   ],
   "confidence": 0.87,
   "grounded": true,
-  "debug": {"route": "retrieval"}
+  "debug": {"route": "retrieval", "rewritten": "...", "rerank_model": "cross-encoder/ms-marco-MiniLM-L-6-v2", "rerank_top_score": 0.95, "rerank_fallback": false}
 }
 ```
 
-Each citation is one retrieved chunk, so several citations can come from the same paper. `paper_id`, `section`, `page` and `chunk_index` are optional (`null` for an abstract-only paper or an old index), and `excerpt` is the chunk text. `confidence` is the top similarity score of the retrieved chunks. It is not a calibrated probability, and its scale depends on the embedding model.
+Each citation is one retrieved chunk, so several citations can come from the same paper. The citations are the 5 chunks the reranker kept, best first. `paper_id`, `section`, `page` and `chunk_index` are optional (`null` for an abstract-only paper or an old index), and `excerpt` is the chunk text. `confidence` is the top cosine similarity of the 20 retrieved chunks (the reranker does not change it). It is not a calibrated probability, and its scale depends on the embedding model. In `debug`, `rerank_model` and `rerank_top_score` are `null` when reranking is off, and `rerank_fallback` is `true` when the reranker failed and the vector order was kept (the request still succeeds).
 
 Unsafe personal-advice queries (e.g. "diagnose me", "my symptoms") return a refusal with `"grounded": false`.
 
@@ -284,11 +309,11 @@ Unsafe personal-advice queries (e.g. "diagnose me", "my symptoms") return a refu
 |---|---|
 | `step_start` | `{"node"}` |
 | `step_end` | `{"node", "elapsed_ms"}` |
-| `citations` | `{"citations", "confidence"}` (after retrieve) |
+| `citations` | `{"citations", "confidence"}` (after rerank: the final 5) |
 | `token` | `{"text"}` |
 | `error` | `{"message"}` |
 | `final` | the full `/query` response; authoritative, replaces streamed text |
 
-Unsafe queries emit no `token` events; `final` carries the refusal. A client disconnect cancels the workflow and the LLM request. Try it: `curl -N -X POST localhost:8000/query/stream -H "content-type: application/json" -d "{\"question\": \"vision transformers for chest X-rays\"}"`.
+The steps run in this order: `classify`, `rewrite`, `retrieve`, `rerank`, `generate`, `validate` (the UI shows the rerank step as "Reranking passages"). Unsafe queries emit no `token` events; `final` carries the refusal. A client disconnect cancels the workflow and the LLM request. Try it: `curl -N -X POST localhost:8000/query/stream -H "content-type: application/json" -d "{\"question\": \"vision transformers for chest X-rays\"}"`.
 
 Tracing is opt-in: set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY` (and optionally `LANGSMITH_PROJECT`). Unset, no client is created and nothing leaves the machine.

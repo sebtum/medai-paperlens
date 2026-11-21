@@ -154,13 +154,13 @@ Check whether "right paper, wrong section" is still above 25 % of top-5 hits aft
   - [x] At or below 25 %: recorded, done. Above 25 %: **stop and detail the experiment with the owner** (token budget 256, `merge_peers` on and off, two collections, a pre-flight mode that skips the source-chunk checks because re-chunking changes chunk numbers).
 - Note: Done 2026-11-20/21. Share was 28.4 % (above 25 %), so the full experiment ran after owner approval: cap 256 tokens, merge on (1,258 chunks) and off (1,961 chunks), eval-only collections, `ingest --chunk-tokens N --no-merge-peers` and `run --rechunked`. Not adopted: merge +0.020 [-0.0323, +0.0840], no-merge +0.014 [-0.0402, +0.0772] (multi_section clearly worse), A stays for both. Share fell to 25.8 %, still above the limit. Same quality with half the evidence text (2556 to 1282 tokens) and half the reranker time (1592 to 795 ms), to be judged in Phase 11. Labelling: 20 candidates, 3 added, 17 rejected; golden hash now `0c62886fd489`, 164 labels; kept runs re-run on it (bge and medcpt runs stay on `cc08395a87ca`, owner decision). Recorded in the ADR-0028 addendum and `data/eval/CHANGELOG.md`. Reports: `data/eval/reports/run-chunk256_*.md`, `compare-chunk256_*-vs-rerank_minilm.md`.
 
-### [ ] T12: Docs
+### [x] T12: Docs
 - Files: `README.md`, `CLAUDE.md`, `docs/roadmap.md`, `docs/architecture.md`, `docs/adr/0023-golden-set-methodology.md`, ADR index
 - Depends on: all · Group: G8
 - Acceptance criteria:
-  - [ ] ADR-0023 amended: v2 near-miss questions, the top-5 labelling pass, `adjudicated.jsonl`, score kinds and the gate curve.
-  - [ ] README: the rerank step, `RERANKER_MODEL`, first-start download size, the stream event order. CLAUDE.md layers and commands. Roadmap row 10 done.
-- Note:
+  - [x] ADR-0023 amended: v2 near-miss questions, the top-5 labelling pass, `adjudicated.jsonl`, score kinds and the gate curve.
+  - [x] README: the rerank step, `RERANKER_MODEL`, first-start download size, the stream event order. CLAUDE.md layers and commands. Roadmap row 10 done.
+- Note: Done 2026-11-21. ADR-0023 amended (v2 questions, top-5 labelling passes, `adjudicated.jsonl`, hash changes, score kinds, gate curve). README: rerank step, `RERANKER_MODEL`, 91 MB first-start download, step order, debug fields, eval configs and experiment commands, golden set 65 questions and 164 labels. CLAUDE.md layers and commands, roadmap row 10 and follow-ups, architecture.md, ADR index (0027 unused, 0028 wording). The stale reranker wording from T8 was already gone; none found. The golden set sync to LangSmith for hash `0c62886fd489` is still open (Verify or owner).
 
 ## ADRs
 - ADR-0023 amendment: golden set v2 and the labelling pass (T12; the method is fixed by this plan)
