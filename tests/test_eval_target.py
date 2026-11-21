@@ -31,7 +31,8 @@ from app.evaluation.target import (
     source_overlap,
 )
 from app.retrieval.ingestion import point_id
-from tests.conftest import FakeLlm
+from app.retrieval.rerank import rerank_passage
+from tests.conftest import FakeLlm, FakeReranker
 
 MODEL = "BAAI/bge-small-en-v1.5"
 COLLECTION = "papers"
@@ -270,13 +271,64 @@ class TestRewriteCache:
         with pytest.raises(RewriteCacheMissError):
             await rewrite_query(entry, REWRITER, cache, None)
 
-    def test_prompt_hash_is_the_hash_of_the_real_prompt(self) -> None:
+    def test_prompt_hash_covers_the_real_prompt_and_the_cleanup_version(self) -> None:
         import hashlib
 
         from app.workflow import rewrite
 
-        expected = hashlib.sha256(rewrite._PROMPT.encode("utf-8")).hexdigest()
+        text = f"{rewrite._PROMPT}\n{rewrite.REWRITE_CLEANUP_VERSION}"
+        expected = hashlib.sha256(text.encode("utf-8")).hexdigest()
         assert rewrite_prompt_sha256() == expected
+
+    async def test_a_new_cleanup_version_misses_the_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entry = make_entry()
+        cache = RewriteCache(tmp_path / "rewrites.jsonl")
+        cache.put(RewriteKey.for_entry(entry, REWRITER), "old")
+
+        monkeypatch.setattr(target, "REWRITE_CLEANUP_VERSION", "next")
+        with pytest.raises(RewriteCacheMissError):
+            await rewrite_query(entry, REWRITER, cache, None)
+
+    async def test_a_leaked_label_is_cleaned_before_it_is_stored(
+        self, tmp_path: Path
+    ) -> None:
+        entry = make_entry()
+        path = tmp_path / "rewrites.jsonl"
+        cache = RewriteCache(path)
+        llm = FakeLlm(answer="Rewritten question: pneumothorax detection")
+
+        assert await rewrite_query(entry, REWRITER, cache, llm) == (
+            "pneumothorax detection"
+        )
+        assert json.loads(path.read_text(encoding="utf-8"))["rewrite"] == (
+            "pneumothorax detection"
+        )
+
+    async def test_output_empty_after_cleaning_is_a_failure(
+        self, tmp_path: Path
+    ) -> None:
+        cache = RewriteCache(tmp_path / "rewrites.jsonl")
+        llm = FakeLlm(answer="Rewritten question:")
+        with pytest.raises(RewriteFallbackError, match="empty rewrite"):
+            await rewrite_query(make_entry(), REWRITER, cache, llm)
+        assert len(cache) == 0
+
+    def test_committed_rewrites_have_no_leaked_label(self) -> None:
+        cache = RewriteCache(target.DEFAULT_REWRITES_PATH)
+        assert len(cache) > 0
+        leaked = [
+            key.question_id
+            for key in cache._rewrites
+            if cache._rewrites[key].lower().lstrip().startswith("rewritten question")
+        ]
+        assert leaked == []
+
+    def test_committed_rewrites_use_the_current_prompt_hash(self) -> None:
+        cache = RewriteCache(target.DEFAULT_REWRITES_PATH)
+        hashes = {key.prompt_sha256 for key in cache._rewrites}
+        assert hashes == {rewrite_prompt_sha256()}
 
     def test_bad_cache_line_names_the_line(self, tmp_path: Path) -> None:
         path = tmp_path / "rewrites.jsonl"
@@ -493,6 +545,27 @@ class TestPreflight:
         with pytest.raises(PreflightError, match="section does not exist"):
             await preflight(entries, corpus, make_config())  # type: ignore[arg-type]
 
+    async def test_rechunked_skips_source_chunk_checks_but_keeps_the_section_check(
+        self, corpus: FakeAsyncQdrant
+    ) -> None:
+        stale_numbers = [make_entry(source_chunks=["maira_2:99", "garbage"])]
+        index = await preflight(
+            stale_numbers,
+            corpus,  # type: ignore[arg-type]
+            make_config(),
+            skip_source_chunks=True,
+        )
+        assert index.chunk_count == 3
+
+        missing_section = [make_entry(relevant=[("maira_2", "Nope", 1)])]
+        with pytest.raises(PreflightError, match="section does not exist"):
+            await preflight(
+                missing_section,
+                corpus,  # type: ignore[arg-type]
+                make_config(),
+                skip_source_chunks=True,
+            )
+
     async def test_missing_source_chunk_is_reported(
         self, corpus: FakeAsyncQdrant
     ) -> None:
@@ -656,3 +729,500 @@ class TestLongestSharedNgram:
             question="beta gamma", source_chunks=["maira_2:0", "maira_2:99"]
         )
         assert await source_overlap(entry, corpus, COLLECTION) == 2  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Reranked retrieval (Phase 10)
+# ---------------------------------------------------------------------------
+
+
+def titled_point(title: str, *args: Any, **kwargs: Any) -> SimpleNamespace:
+    point = make_point(*args, **kwargs)
+    point.payload["title"] = title
+    return point
+
+
+@pytest.fixture
+def rerank_corpus() -> FakeAsyncQdrant:
+    """Four chunks: three above the 0.6 pre-filter and one (0.5) below it."""
+    return FakeAsyncQdrant(
+        [
+            titled_point("Paper A", "pa", "Intro", 0, text="text a", score=0.9),
+            titled_point("Paper A", "pa", "Methods", 1, text="text b", score=0.8),
+            titled_point("Paper B", "pb", "Results", 0, text="text c", score=0.7),
+            titled_point("Paper B", "pb", "Appendix", 1, text="text d", score=0.5),
+        ]
+    )
+
+
+def rerank_config(**overrides: Any) -> RetrievalConfig:
+    return make_config(reranker="some/reranker", **overrides)
+
+
+class TestRerankConfig:
+    def test_defaults_are_dense_only(self) -> None:
+        config = make_config()
+        assert config.reranker is None
+        assert config.rerank_query == "rewritten"
+        assert config.prefilter_threshold == 0.6
+        assert config.score_kind == "cosine"
+
+    def test_a_reranker_makes_the_scores_rerank_scores(self) -> None:
+        assert rerank_config().score_kind == "rerank"
+
+    def test_rerank_query_must_be_known(self) -> None:
+        with pytest.raises(ValueError, match="rerank_query"):
+            make_config(rerank_query="both")
+
+    def test_prefilter_must_be_a_cosine_value(self) -> None:
+        with pytest.raises(ValueError, match="prefilter_threshold"):
+            make_config(prefilter_threshold=1.5)
+
+    def test_blank_reranker_name_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="reranker"):
+            make_config(reranker=" ")
+
+
+class TestRerankedRetrieval:
+    async def test_prefilters_reranks_and_sorts_by_the_reranker_score(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        reranker = FakeReranker(scores=[0.1, 0.95, 0.4])
+        result = await retrieve_ranked(
+            make_entry(),
+            rerank_config(),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=reranker,
+        )
+
+        # The 0.5 chunk never reaches the reranker; the other three are re-scored.
+        assert len(reranker.calls[0][1]) == 3
+        assert [(h.section, h.score) for h in result.hits] == [
+            ("Methods", 0.95),
+            ("Results", 0.4),
+            ("Intro", 0.1),
+        ]
+        # The search itself still ran at threshold 0 with the full depth.
+        assert rerank_corpus.query_calls[0]["score_threshold"] == 0.0
+        assert rerank_corpus.query_calls[0]["limit"] == 20
+
+    async def test_the_reranker_reads_title_section_and_text(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        reranker = FakeReranker(scores=[0.5, 0.5, 0.5])
+        await retrieve_ranked(
+            make_entry(),
+            rerank_config(),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=reranker,
+        )
+        # Dense order, the exact text the app builds with the same function.
+        assert reranker.calls[0][1] == [
+            rerank_passage("Paper A", "Intro", "text a"),
+            rerank_passage("Paper A", "Methods", "text b"),
+            rerank_passage("Paper B", "Results", "text c"),
+        ]
+
+    async def test_ties_keep_the_dense_order(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        result = await retrieve_ranked(
+            make_entry(),
+            rerank_config(),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=FakeReranker(scores=[0.3, 0.3, 0.3]),
+        )
+        assert [h.section for h in result.hits] == ["Intro", "Methods", "Results"]
+
+    async def test_the_prefilter_threshold_is_configurable(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        reranker = FakeReranker(scores=[0.2, 0.2, 0.2, 0.2])
+        result = await retrieve_ranked(
+            make_entry(),
+            rerank_config(prefilter_threshold=0.0),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=reranker,
+        )
+        assert len(result.hits) == 4
+
+    async def test_returns_the_time_taken(self, rerank_corpus: FakeAsyncQdrant) -> None:
+        result = await retrieve_ranked(
+            make_entry(),
+            rerank_config(),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=FakeReranker(scores=[0.1, 0.2, 0.3]),
+        )
+        assert result.rerank_ms is not None
+        assert result.rerank_ms >= 0.0
+
+    async def test_rewritten_query_is_the_default_reranker_text(
+        self, rerank_corpus: FakeAsyncQdrant, tmp_path: Path
+    ) -> None:
+        entry = make_entry()
+        cache = RewriteCache(tmp_path / "rewrites.jsonl")
+        cache.put(RewriteKey.for_entry(entry, REWRITER), "rewritten text")
+        reranker = FakeReranker(scores=[0.1, 0.2, 0.3])
+        await retrieve_ranked(
+            entry,
+            rerank_config(rewrite=True, rewrite_model=REWRITER),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            cache=cache,
+            reranker=reranker,
+        )
+        assert reranker.calls[0][0] == "rewritten text"
+
+    async def test_original_question_can_be_the_reranker_text(
+        self, rerank_corpus: FakeAsyncQdrant, tmp_path: Path
+    ) -> None:
+        entry = make_entry()
+        cache = RewriteCache(tmp_path / "rewrites.jsonl")
+        cache.put(RewriteKey.for_entry(entry, REWRITER), "rewritten text")
+        embedder = FakeEmbedder()
+        reranker = FakeReranker(scores=[0.1, 0.2, 0.3])
+        result = await retrieve_ranked(
+            entry,
+            rerank_config(
+                rewrite=True, rewrite_model=REWRITER, rerank_query="original"
+            ),
+            embedder=embedder,
+            client=rerank_corpus,  # type: ignore[arg-type]
+            cache=cache,
+            reranker=reranker,
+        )
+        assert reranker.calls[0][0] == entry.question
+        # Only the reranker's text changes; the vector search still used the rewrite.
+        assert embedder.texts == ["rewritten text"]
+        assert result.query == "rewritten text"
+
+    async def test_nothing_left_after_the_prefilter_skips_the_model(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        reranker = FakeReranker(scores=[])
+        result = await retrieve_ranked(
+            make_entry(),
+            rerank_config(prefilter_threshold=0.99),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=reranker,
+        )
+        assert result.hits == []
+        assert result.rerank_ms is None
+        assert reranker.calls == []
+
+    async def test_a_reranker_config_without_a_reranker_raises(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        with pytest.raises(ValueError, match="some/reranker"):
+            await retrieve_ranked(
+                make_entry(),
+                rerank_config(),
+                embedder=FakeEmbedder(),
+                client=rerank_corpus,  # type: ignore[arg-type]
+            )
+
+    async def test_wrong_number_of_scores_raises(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        with pytest.raises(ValueError, match="2 scores for 3 passages"):
+            await retrieve_ranked(
+                make_entry(),
+                rerank_config(),
+                embedder=FakeEmbedder(),
+                client=rerank_corpus,  # type: ignore[arg-type]
+                reranker=FakeReranker(scores=[0.1, 0.2]),
+            )
+
+    async def test_reranker_errors_are_not_swallowed(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        with pytest.raises(RuntimeError, match="model crashed"):
+            await retrieve_ranked(
+                make_entry(),
+                rerank_config(),
+                embedder=FakeEmbedder(),
+                client=rerank_corpus,  # type: ignore[arg-type]
+                reranker=FakeReranker(error=RuntimeError("model crashed")),
+            )
+
+    async def test_dense_runs_are_unchanged_and_untimed(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        reranker = FakeReranker(scores=[0.1])
+        result = await retrieve_ranked(
+            make_entry(),
+            make_config(),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+            reranker=reranker,  # ignored: the config has no reranker
+        )
+        assert reranker.calls == []
+        assert result.rerank_ms is None
+        assert [(h.section, h.score) for h in result.hits] == [
+            ("Intro", 0.9),
+            ("Methods", 0.8),
+            ("Results", 0.7),
+            ("Appendix", 0.5),
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Hybrid retrieval (Phase 10, T10)
+# ---------------------------------------------------------------------------
+
+
+class HybridFakeQdrant(FakeAsyncQdrant):
+    """Fake hybrid collection: a fixed fused result, plus `get_collection`.
+
+    `query_points` returns `points` in the given order (the fusion happens inside Qdrant
+    in real life) and records the call; the dense/BM25 split is checked on the call.
+    """
+
+    def __init__(
+        self,
+        points: list[SimpleNamespace],
+        *,
+        vectors: Any = None,
+        sparse: Any = None,
+    ) -> None:
+        super().__init__(points)
+        self.params = SimpleNamespace(
+            vectors={"dense": object()} if vectors is None else vectors,
+            sparse_vectors={"bm25": object()} if sparse is None else sparse,
+        )
+        self.get_collection_calls: list[str] = []
+
+    async def query_points(self, **kwargs: Any) -> SimpleNamespace:
+        self.query_calls.append(kwargs)
+        return SimpleNamespace(points=list(self.points)[: kwargs["limit"]])
+
+    async def get_collection(self, name: str) -> SimpleNamespace:
+        self.get_collection_calls.append(name)
+        return SimpleNamespace(config=SimpleNamespace(params=self.params))
+
+
+def hybrid_config(**overrides: Any) -> RetrievalConfig:
+    return make_config(collection="eval_hybrid", hybrid=True, **overrides)
+
+
+@pytest.fixture
+def hybrid_corpus() -> HybridFakeQdrant:
+    """A fused list: RRF scores are tiny, and the last hit is a BM25-only chunk."""
+    return HybridFakeQdrant(
+        [
+            titled_point("Paper A", "pa", "Intro", 0, text="text a", score=0.0328),
+            titled_point("Paper A", "pa", "Methods", 1, text="text b", score=0.0161),
+            titled_point("Paper B", "pb", "Results", 0, text="text c", score=0.0159),
+        ]
+    )
+
+
+class TestHybridConfig:
+    def test_defaults_are_not_hybrid(self) -> None:
+        assert make_config().hybrid is False
+
+    def test_hybrid_scores_are_rrf_scores(self) -> None:
+        assert hybrid_config().score_kind == "rrf"
+
+    def test_a_reranker_makes_hybrid_scores_rerank_scores(self) -> None:
+        assert hybrid_config(reranker="some/reranker").score_kind == "rerank"
+
+
+class TestHybridRetrieval:
+    async def test_dense_side_gets_the_prefix_and_bm25_the_bare_query(
+        self, hybrid_corpus: HybridFakeQdrant
+    ) -> None:
+        embedder = FakeEmbedder()
+        entry = make_entry(question="How is the model evaluated?")
+        result = await retrieve_ranked(
+            entry,
+            hybrid_config(prefix="Represent this: "),
+            embedder=embedder,
+            client=hybrid_corpus,  # type: ignore[arg-type]
+        )
+
+        assert embedder.texts == ["Represent this: How is the model evaluated?"]
+        assert result.query == "How is the model evaluated?"
+        (call,) = hybrid_corpus.query_calls
+        dense, bm25 = call["prefetch"]
+        assert bm25.query.text == "How is the model evaluated?"  # no prefix
+        assert (dense.using, bm25.using) == ("dense", "bm25")
+
+    async def test_the_rewritten_query_feeds_both_sides(
+        self, hybrid_corpus: HybridFakeQdrant, tmp_path: Path
+    ) -> None:
+        entry = make_entry()
+        cache = RewriteCache(tmp_path / "rewrites.jsonl")
+        cache.put(RewriteKey.for_entry(entry, REWRITER), "a cached rewrite")
+        embedder = FakeEmbedder()
+
+        result = await retrieve_ranked(
+            entry,
+            hybrid_config(prefix="P: ", rewrite=True, rewrite_model=REWRITER),
+            embedder=embedder,
+            client=hybrid_corpus,  # type: ignore[arg-type]
+            cache=cache,
+        )
+
+        assert embedder.texts == ["P: a cached rewrite"]
+        assert result.query == "a cached rewrite"
+        assert hybrid_corpus.query_calls[0]["prefetch"][1].query.text == (
+            "a cached rewrite"
+        )
+
+    async def test_depth_and_the_dense_cut_go_into_the_query(
+        self, hybrid_corpus: HybridFakeQdrant
+    ) -> None:
+        await retrieve_ranked(
+            make_entry(),
+            hybrid_config(depth=20, prefilter_threshold=0.6),
+            embedder=FakeEmbedder(),
+            client=hybrid_corpus,  # type: ignore[arg-type]
+        )
+
+        (call,) = hybrid_corpus.query_calls
+        assert call["collection_name"] == "eval_hybrid"
+        assert call["limit"] == 20
+        dense, bm25 = call["prefetch"]
+        assert (dense.limit, bm25.limit) == (20, 20)
+        assert dense.score_threshold == 0.6
+        assert bm25.score_threshold is None
+
+    async def test_hybrid_only_returns_the_fused_order_and_scores_untouched(
+        self, hybrid_corpus: HybridFakeQdrant
+    ) -> None:
+        result = await retrieve_ranked(
+            make_entry(),
+            hybrid_config(),
+            embedder=FakeEmbedder(),
+            client=hybrid_corpus,  # type: ignore[arg-type]
+        )
+
+        assert [(h.section, h.score) for h in result.hits] == [
+            ("Intro", 0.0328),
+            ("Methods", 0.0161),
+            ("Results", 0.0159),
+        ]
+        assert result.rerank_ms is None
+
+    async def test_a_reranker_sees_the_whole_fused_list_without_a_cosine_cut(
+        self, hybrid_corpus: HybridFakeQdrant
+    ) -> None:
+        # All three RRF scores are far below 0.6; a cosine pre-filter would drop them.
+        reranker = FakeReranker(scores=[0.1, 0.9, 0.5])
+        result = await retrieve_ranked(
+            make_entry(),
+            hybrid_config(reranker="some/reranker"),
+            embedder=FakeEmbedder(),
+            client=hybrid_corpus,  # type: ignore[arg-type]
+            reranker=reranker,
+        )
+
+        assert len(reranker.calls[0][1]) == 3
+        assert reranker.calls[0][1][0] == rerank_passage("Paper A", "Intro", "text a")
+        assert [(h.section, h.score) for h in result.hits] == [
+            ("Methods", 0.9),
+            ("Results", 0.5),
+            ("Intro", 0.1),
+        ]
+        assert result.rerank_ms is not None
+
+    async def test_the_reranker_can_read_the_original_question(
+        self, hybrid_corpus: HybridFakeQdrant
+    ) -> None:
+        reranker = FakeReranker(scores=[0.1, 0.2, 0.3])
+        entry = make_entry(question="the golden question")
+        await retrieve_ranked(
+            entry,
+            hybrid_config(reranker="some/reranker", rerank_query="original"),
+            embedder=FakeEmbedder(),
+            client=hybrid_corpus,  # type: ignore[arg-type]
+            reranker=reranker,
+        )
+        assert reranker.calls[0][0] == "the golden question"
+
+    async def test_a_dense_config_never_sends_a_prefetch(
+        self, rerank_corpus: FakeAsyncQdrant
+    ) -> None:
+        await retrieve_ranked(
+            make_entry(),
+            make_config(),
+            embedder=FakeEmbedder(),
+            client=rerank_corpus,  # type: ignore[arg-type]
+        )
+        assert "prefetch" not in rerank_corpus.query_calls[0]
+
+
+class TestHybridPreflight:
+    def entries(self) -> list[GoldenEntry]:
+        return [make_entry(relevant=[("maira_2", "Results", 2)])]
+
+    async def test_a_hybrid_collection_passes_and_is_read_for_its_layout(
+        self,
+    ) -> None:
+        client = HybridFakeQdrant([make_point("maira_2", "Results", 0)])
+
+        index = await preflight(
+            self.entries(),
+            client,  # type: ignore[arg-type]
+            hybrid_config(),
+        )
+
+        assert index.chunk_count == 1
+        assert client.get_collection_calls == ["eval_hybrid"]
+
+    async def test_stale_labels_are_still_found_in_a_hybrid_collection(self) -> None:
+        client = HybridFakeQdrant([make_point("maira_2", "Methods", 0)])
+
+        with pytest.raises(PreflightError, match="labelled section does not exist"):
+            await preflight(
+                self.entries(),
+                client,  # type: ignore[arg-type]
+                hybrid_config(),
+            )
+
+    async def test_the_embedding_model_is_still_checked(self) -> None:
+        client = HybridFakeQdrant(
+            [make_point("maira_2", "Results", 0, model="other/model")]
+        )
+
+        with pytest.raises(PreflightError, match="other/model"):
+            await preflight(
+                self.entries(),
+                client,  # type: ignore[arg-type]
+                hybrid_config(),
+            )
+
+    async def test_a_collection_without_the_hybrid_layout_is_refused(self) -> None:
+        # The app collection: one unnamed dense vector, no sparse vector.
+        client = HybridFakeQdrant(
+            [make_point("maira_2", "Results", 0)],
+            vectors=SimpleNamespace(size=384),
+            sparse={},
+        )
+
+        with pytest.raises(PreflightError) as excinfo:
+            await preflight(
+                self.entries(),
+                client,  # type: ignore[arg-type]
+                hybrid_config(),
+            )
+        message = str(excinfo.value)
+        assert "no named dense vector 'dense'" in message
+        assert "no sparse vector 'bm25'" in message
+
+    async def test_a_dense_config_does_not_read_the_layout(
+        self, corpus: FakeAsyncQdrant
+    ) -> None:
+        # FakeAsyncQdrant has no get_collection: the call would raise AttributeError.
+        await preflight(
+            [make_entry(relevant=[("maira_2", "Results", 2)])],
+            corpus,  # type: ignore[arg-type]
+            make_config(),
+        )

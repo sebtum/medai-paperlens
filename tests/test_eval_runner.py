@@ -50,11 +50,13 @@ from app.evaluation.target import (
 )
 from app.workflow.generate import _estimated_tokens
 from scripts import eval_retrieval as cli
+from tests.conftest import FakeReranker
 from tests.test_eval_target import (
     MODEL,
     REWRITER,
     FakeAsyncQdrant,
     FakeEmbedder,
+    HybridFakeQdrant,
     RecordingLlm,
     make_entry,
     make_point,
@@ -337,12 +339,17 @@ class TestNoQueryPrefixLeak:
 
 
 class TestNamedConfigs:
-    def test_the_four_plan_configs_exist(self) -> None:
+    def test_the_plan_configs_exist(self) -> None:
         assert set(runner.NAMED_CONFIGS) == {
             "baseline",
             "no_rewrite",
             "prefix",
             "bge_base",
+            "rerank_minilm",
+            "rerank_bge",
+            "rerank_medcpt",
+            "hybrid",
+            "hybrid_rerank",
         }
 
     def test_baseline_is_bge_small_without_prefix_and_with_rewrite(self) -> None:
@@ -1061,7 +1068,15 @@ class TestPool:
         self, two_runs: Harness, capsys: pytest.CaptureFixture[str]
     ) -> None:
         code = cli_main(
-            ["pool", "a", "b", *two_runs.paths()], services=two_runs.services()
+            [
+                "pool",
+                "a",
+                "b",
+                *two_runs.paths(),
+                "--adjudicated",
+                str(two_runs.tmp / "adjudicated.jsonl"),
+            ],
+            services=two_runs.services(),
         )
         out = capsys.readouterr().out
         assert code == 0
@@ -1072,7 +1087,15 @@ class TestPool:
     def test_command_can_write_to_a_file(self, two_runs: Harness) -> None:
         out = two_runs.tmp / "pool.md"
         code = cli_main(
-            ["pool", "a", *two_runs.paths(), "--out", str(out)],
+            [
+                "pool",
+                "a",
+                *two_runs.paths(),
+                "--out",
+                str(out),
+                "--adjudicated",
+                str(two_runs.tmp / "adjudicated.jsonl"),
+            ],
             services=two_runs.services(),
         )
         assert code == 0
@@ -1160,3 +1183,718 @@ class TestSections:
     def test_empty_collection_exits_nonzero(self, tmp_path: Path) -> None:
         harness = Harness(tmp_path, points=[])
         assert cli_main(["sections"], services=harness.services()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Reranker runs (Phase 10)
+# ---------------------------------------------------------------------------
+
+# The Harness corpus has three chunks at or above the 0.6 pre-filter (Results 0.9,
+# Methods 0.8, Table 2 0.7) and one below it (Introduction 0.3). Scores below are in
+# that dense order, so the reranker puts Table 2 first, then Results, then Methods.
+RERANK_SCORES = [0.5, 0.2, 0.9]
+
+
+class RerankHarness(Harness):
+    """`Harness` whose reranker returns fixed scores and is built once per run."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        super().__init__(tmp_path)
+        self.reranker = FakeReranker(scores=RERANK_SCORES)
+        self.reranker_loads: list[str] = []
+
+    def services(self) -> runner.Services:
+        def make_reranker(name: str) -> FakeReranker:
+            self.reranker_loads.append(name)
+            return self.reranker
+
+        base = super().services()
+        base.reranker_factory = make_reranker
+        base.reranker_disk_bytes = lambda _name: 91_000_000
+        return base
+
+
+@pytest.fixture
+def rerank_harness(tmp_path: Path) -> RerankHarness:
+    return RerankHarness(tmp_path)
+
+
+class TestRerankConfigs:
+    def test_three_named_reranker_configs_are_built_on_prefix(self) -> None:
+        prefix = runner.NAMED_CONFIGS["prefix"]
+        expected = {
+            "rerank_minilm": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            "rerank_bge": "BAAI/bge-reranker-base",
+            "rerank_medcpt": "ncbi/MedCPT-Cross-Encoder",
+        }
+        for name, model in expected.items():
+            spec = runner.NAMED_CONFIGS[name]
+            assert spec.reranker == model
+            assert (spec.embedder, spec.collection) == (
+                prefix.embedder,
+                prefix.collection,
+            )
+            assert spec.prefix == prefix.prefix
+            assert spec.rewrite is prefix.rewrite
+
+    def test_dense_configs_have_no_reranker(self) -> None:
+        for name in ("baseline", "no_rewrite", "prefix", "bge_base"):
+            assert runner.NAMED_CONFIGS[name].reranker is None
+
+    def test_reranker_options_resolve_with_defaults(self) -> None:
+        options = runner.make_run_options("rerank_bge", rewrite_model="m")
+        config = options.config
+        assert config.reranker == "BAAI/bge-reranker-base"
+        assert config.rerank_query == "rewritten"
+        assert config.prefilter_threshold == 0.6
+        assert config.depth == 20
+
+    def test_flags_override_depth_query_and_model_when_named(self) -> None:
+        options = runner.make_run_options(
+            "rerank_bge",
+            name="rerank_medcpt_original_d40",
+            rewrite_model="m",
+            depth=40,
+            rerank_query="original",
+            reranker="medcpt",  # an alias
+        )
+        assert options.name == "rerank_medcpt_original_d40"
+        assert options.config.depth == 40
+        assert options.config.rerank_query == "original"
+        assert options.config.reranker == "ncbi/MedCPT-Cross-Encoder"
+
+    def test_reranker_flag_also_takes_a_full_model_name(self) -> None:
+        options = runner.make_run_options(
+            "prefix", name="x", rewrite_model="m", reranker="org/my-model"
+        )
+        assert options.config.reranker == "org/my-model"
+
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [("depth", 40), ("rerank_query", "original"), ("reranker", "minilm")],
+    )
+    def test_each_flag_needs_an_explicit_name(self, flag: str, value: Any) -> None:
+        kwargs: dict[str, Any] = {flag: value}
+        with pytest.raises(runner.RunError, match="--name is required"):
+            runner.make_run_options("rerank_bge", rewrite_model="m", **kwargs)
+
+    def test_rerank_query_needs_a_reranker(self) -> None:
+        with pytest.raises(runner.RunError, match="needs a reranker"):
+            runner.make_run_options(
+                "prefix", name="x", rewrite_model="m", rerank_query="original"
+            )
+
+    def test_cli_refuses_a_flag_without_a_name(
+        self, rerank_harness: RerankHarness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.ERROR):
+            code = rerank_harness.run("--depth", "40", config="rerank_bge")
+        assert code == 1
+        assert "--name is required" in caplog.text
+        assert not rerank_harness.runs.exists()  # nothing was written
+        assert rerank_harness.reranker_loads == []
+
+
+class TestRerankRun:
+    def test_run_records_rerank_scores_timing_and_meta(
+        self, rerank_harness: RerankHarness
+    ) -> None:
+        assert rerank_harness.run(config="rerank_minilm") == 0
+
+        record = load_run(rerank_harness.runs / "rerank_minilm.json")
+        config = record.meta.config
+        assert config["score_kind"] == "rerank"
+        assert config["reranker"] == "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        assert config["rerank_query"] == "rewritten"
+        assert config["prefilter_threshold"] == 0.6
+        assert config["reranker_disk_bytes"] == 91_000_000
+        assert config["reranker_load_s"] >= 0
+        assert record.meta.score_kind == "rerank"
+        for question in record.questions:
+            # Table 2 (0.9), Results (0.5), Methods (0.2): sorted by reranker score.
+            assert [(h.section, h.score) for h in question.hits] == [
+                ("Results > Table 2", 0.9),
+                ("Results", 0.5),
+                ("Methods", 0.2),
+            ]
+            assert question.rerank_ms is not None and question.rerank_ms >= 0
+            # The 0.3 chunk was cut by the pre-filter, so only three hits remain.
+            assert len(question.hits) == 3
+            assert len(question.chunk_tokens) == 3
+
+    def test_the_model_is_loaded_once_and_warmed_up_before_timing(
+        self, rerank_harness: RerankHarness
+    ) -> None:
+        assert rerank_harness.run(config="rerank_minilm") == 0
+
+        assert rerank_harness.reranker_loads == ["cross-encoder/ms-marco-MiniLM-L-6-v2"]
+        calls = rerank_harness.reranker.calls
+        assert calls[0] == (runner.WARMUP_TEXT, [runner.WARMUP_TEXT])
+        assert len(calls) == 1 + 3  # the warm-up plus one call per question
+
+    def test_the_reranker_reads_the_same_passages_as_the_app(
+        self, rerank_harness: RerankHarness
+    ) -> None:
+        assert rerank_harness.run(config="rerank_minilm") == 0
+
+        passages = rerank_harness.reranker.calls[1][1]
+        # make_point gives no title, so the passage is "\n{section}\n{text}".
+        assert passages[0] == f"\nResults\n{TEXT_A}"
+        assert passages[1] == f"\nMethods\n{TEXT_B}"
+
+    def test_report_shows_the_reranker_and_its_time(
+        self, rerank_harness: RerankHarness
+    ) -> None:
+        assert rerank_harness.run(config="rerank_minilm") == 0
+
+        report = (rerank_harness.reports / "run-rerank_minilm.md").read_text(
+            encoding="utf-8"
+        )
+        assert "## Reranker" in report
+        assert "Time per question, median" in report
+        assert "Time per question, 90th percentile" in report
+        assert "91 MB" in report
+        assert "Wrong section" in report
+        # Cut at 0 for reranked scores, so the low scores are still counted.
+        assert "Score kind: rerank; threshold: 0.00" in report
+
+    def test_original_question_flag_changes_the_reranker_text_only(
+        self, rerank_harness: RerankHarness
+    ) -> None:
+        code = rerank_harness.run(
+            "--name",
+            "orig",
+            "--rerank-query",
+            "original",
+            config="rerank_minilm",
+        )
+        assert code == 0
+
+        queries = [call[0] for call in rerank_harness.reranker.calls[1:]]
+        assert queries == [entry.question for entry in rerank_harness.entries]
+        # The vector search used the rewrite (the fake LLM's answer).
+        assert set(rerank_harness.embedder.texts) == {
+            runner.BGE_QUERY_PREFIX + "a rewritten question"
+        }
+        record = load_run(rerank_harness.runs / "orig.json")
+        assert record.meta.config["rerank_query"] == "original"
+
+    def test_depth_flag_sets_the_search_depth(
+        self, rerank_harness: RerankHarness
+    ) -> None:
+        assert (
+            rerank_harness.run(
+                "--name", "deep", "--depth", "40", config="rerank_minilm"
+            )
+            == 0
+        )
+        assert {c["limit"] for c in rerank_harness.qdrant.query_calls} == {40}
+        record = load_run(rerank_harness.runs / "deep.json")
+        assert record.meta.config["depth"] == 40
+
+    def test_reranker_flag_replaces_the_model(
+        self, rerank_harness: RerankHarness
+    ) -> None:
+        code = rerank_harness.run(
+            "--name", "other", "--reranker", "bge", config="rerank_minilm"
+        )
+        assert code == 0
+        assert rerank_harness.reranker_loads == ["BAAI/bge-reranker-base"]
+
+    def test_dense_run_meta_is_marked_cosine_and_loads_no_model(
+        self, rerank_harness: RerankHarness
+    ) -> None:
+        assert rerank_harness.run() == 0  # no_rewrite
+
+        record = load_run(rerank_harness.runs / "no_rewrite.json")
+        assert record.meta.config["score_kind"] == "cosine"
+        assert record.meta.config["reranker"] is None
+        assert "reranker_load_s" not in record.meta.config
+        assert all(q.rerank_ms is None for q in record.questions)
+        assert rerank_harness.reranker_loads == []
+        report = (rerank_harness.reports / "run-no_rewrite.md").read_text(
+            encoding="utf-8"
+        )
+        assert "## Reranker" not in report
+        assert "Score kind: cosine; threshold: 0.60" in report
+
+    def test_dense_hits_are_identical_to_the_cosine_hits_of_before(
+        self, rerank_harness: RerankHarness
+    ) -> None:
+        assert rerank_harness.run() == 0
+
+        q001 = load_run(rerank_harness.runs / "no_rewrite.json").questions[0]
+        assert [(h.paper_id, h.chunk_index, h.score) for h in q001.hits] == [
+            ("maira_2", 0, 0.9),
+            ("maira_2", 1, 0.8),
+            ("conch", 0, 0.7),
+            ("conch", 1, 0.3),
+        ]
+
+    def test_langsmith_experiment_follows_the_score_kind(
+        self, rerank_harness: RerankHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
+        rerank_harness.aevaluate = FakeAevaluate(rerank_harness.entries)
+
+        assert rerank_harness.run("--langsmith", config="rerank_minilm") == 0
+
+        call = rerank_harness.aevaluate.calls[0]
+        assert call["metadata"]["threshold"] == 0.0
+        assert call["metadata"]["score_kind"] == "rerank"
+        # The experiment target reranked too: warm-up, 3 local, 3 experiment calls.
+        assert len(rerank_harness.reranker.calls) == 1 + 3 + 3
+
+    def test_langsmith_experiment_of_a_dense_run_keeps_0_6(
+        self, rerank_harness: RerankHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
+        rerank_harness.aevaluate = FakeAevaluate(rerank_harness.entries)
+
+        assert rerank_harness.run("--langsmith") == 0
+
+        call = rerank_harness.aevaluate.calls[0]
+        assert call["metadata"]["threshold"] == 0.6
+        assert call["metadata"]["score_kind"] == "cosine"
+
+
+class TestCompareAndGateByScoreKind:
+    @staticmethod
+    def reranked(entries: Sequence[GoldenEntry], sha: str) -> RunRecord:
+        record = make_record(entries, sha, "rr")
+        meta = dataclasses.replace(record.meta, config={"score_kind": "rerank"})
+        return dataclasses.replace(record, meta=meta)
+
+    def test_compare_cuts_each_run_at_its_own_default(self, harness: Harness) -> None:
+        sha = golden_sha256(harness.golden)
+        save_run(make_record(harness.entries, sha, "a"), harness.runs / "a.json")
+        save_run(self.reranked(harness.entries, sha), harness.runs / "rr.json")
+
+        code = cli_main(
+            ["compare", "a", "rr", *harness.paths(), "--resamples", "50"],
+            services=harness.services(),
+        )
+
+        assert code == 0
+        report = (harness.reports / "compare-rr-vs-a.md").read_text(encoding="utf-8")
+        assert "A at k=5, t=0.60, B at k=5, t=0.00" in report
+
+    def test_an_explicit_threshold_applies_to_both_runs(self, harness: Harness) -> None:
+        sha = golden_sha256(harness.golden)
+        save_run(make_record(harness.entries, sha, "a"), harness.runs / "a.json")
+        save_run(self.reranked(harness.entries, sha), harness.runs / "rr.json")
+
+        code = cli_main(
+            [
+                "compare",
+                "a",
+                "rr",
+                "--threshold",
+                "0.3",
+                *harness.paths(),
+                "--resamples",
+                "50",
+            ],
+            services=harness.services(),
+        )
+
+        assert code == 0
+        report = (harness.reports / "compare-rr-vs-a.md").read_text(encoding="utf-8")
+        assert "A at k=5, t=0.30, B at k=5, t=0.30" in report
+
+    def test_two_cosine_runs_still_compare_at_0_6(self, two_runs: Harness) -> None:
+        code = cli_main(
+            ["compare", "a", "b", *two_runs.paths(), "--resamples", "50"],
+            services=two_runs.services(),
+        )
+        assert code == 0
+        report = (two_runs.reports / "compare-b-vs-a.md").read_text(encoding="utf-8")
+        assert "A at k=5, t=0.60, B at k=5, t=0.60" in report
+
+    def test_curve_gate_writes_the_refusal_report(self, two_runs: Harness) -> None:
+        code = cli_main(
+            ["curve", "a", "--gate", *two_runs.paths()], services=two_runs.services()
+        )
+        assert code == 0
+        report = (two_runs.reports / "gate-a.md").read_text(encoding="utf-8")
+        assert "Refusal curve: a" in report
+        assert "| 0.00 |" in report and "| 1.00 |" in report
+        assert not (two_runs.reports / "curve-a.md").exists()
+
+
+class TestPoolAdjudicated:
+    def test_rejected_candidates_are_skipped(self) -> None:
+        entries = golden_entries()
+        pools = authoring.pool_candidates(
+            [make_record(entries)],
+            entries,
+            k=10,
+            threshold=0.4,
+            skip={("q001", "maira_2", "Methods")},
+        )
+        q001 = {(c.paper_id, c.section) for c in pools["q001"]}
+        assert q001 == {("conch", "Results > Table 2")}
+        # The same section for another question is still listed.
+        assert authoring.pool_candidates(
+            [make_record(entries)],
+            entries,
+            k=10,
+            threshold=0.4,
+            skip={("q002", "maira_2", "Methods")},
+        )["q001"]
+
+    def test_record_and_load_roundtrip_without_duplicates(self, tmp_path: Path) -> None:
+        path = tmp_path / "adjudicated.jsonl"
+        added = authoring.record_rejections(
+            path, [("q001", "maira_2", "Methods"), ("q001", "maira_2", "Methods")]
+        )
+        again = authoring.record_rejections(
+            path, [("q001", "maira_2", "Methods"), ("q002", "conch", "Intro")]
+        )
+
+        assert (added, again) == (1, 1)
+        assert authoring.load_adjudicated(path) == {
+            ("q001", "maira_2", "Methods"),
+            ("q002", "conch", "Intro"),
+        }
+        rows = [json.loads(line) for line in path.read_text("utf-8").splitlines()]
+        assert rows[0] == {
+            "question_id": "q001",
+            "paper_id": "maira_2",
+            "section": "Methods",
+            "decision": "rejected",
+        }
+
+    def test_reason_is_stored_and_a_missing_file_is_empty(self, tmp_path: Path) -> None:
+        path = tmp_path / "sub" / "adjudicated.jsonl"
+        assert authoring.load_adjudicated(path) == set()
+        authoring.record_rejections(
+            path, [("q001", "p", "S")], reason="no answer in the section"
+        )
+        assert (
+            json.loads(path.read_text("utf-8"))["reason"] == "no answer in the section"
+        )
+
+    def test_a_bad_line_names_the_file_and_line(self, tmp_path: Path) -> None:
+        path = tmp_path / "adjudicated.jsonl"
+        path.write_text('{"question_id": "q001"}\n', encoding="utf-8")
+        with pytest.raises(runner.RunError, match=r"adjudicated\.jsonl:1"):
+            authoring.load_adjudicated(path)
+
+    def test_cli_records_rejections_and_skips_them_afterwards(
+        self, two_runs: Harness, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        adjudicated = two_runs.tmp / "adjudicated.jsonl"
+        base = ["pool", "a", *two_runs.paths(), "--adjudicated", str(adjudicated)]
+
+        assert cli_main(base, services=two_runs.services()) == 0
+        assert "maira_2 / Methods" in capsys.readouterr().out
+
+        code = cli_main(
+            [
+                *base,
+                "--reject",
+                "q001",
+                "maira_2",
+                "Methods",
+                "--reason",
+                "read, no answer",
+            ],
+            services=two_runs.services(),
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "Rejected 1 new candidate(s)" in out
+        assert "- maira_2 / Methods" not in out.split("## q002")[0]  # skipped for q001
+        assert "1 rejected candidate(s) in adjudicated.jsonl are skipped." in out
+
+        # A later pass without --reject still skips it.
+        assert cli_main(base, services=two_runs.services()) == 0
+        later = capsys.readouterr().out
+        assert "- maira_2 / Methods" not in later.split("## q002")[0]
+
+    def test_cli_refuses_an_unknown_question_id(
+        self, two_runs: Harness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        adjudicated = two_runs.tmp / "adjudicated.jsonl"
+        with caplog.at_level(logging.ERROR):
+            code = cli_main(
+                [
+                    "pool",
+                    "a",
+                    *two_runs.paths(),
+                    "--adjudicated",
+                    str(adjudicated),
+                    "--reject",
+                    "q999",
+                    "maira_2",
+                    "Methods",
+                ],
+                services=two_runs.services(),
+            )
+        assert code == 1
+        assert "q999" in caplog.text
+        assert not adjudicated.exists()
+
+
+# ---------------------------------------------------------------------------
+# Hybrid configs and runs (Phase 10, T10)
+# ---------------------------------------------------------------------------
+
+
+def hybrid_points() -> list[SimpleNamespace]:
+    """A fused list in RRF scores (tiny, rank-based), best first."""
+    return [
+        make_point("maira_2", "Results", 0, text=TEXT_A, score=0.0328),
+        make_point("maira_2", "Methods", 1, text=TEXT_B, score=0.0161),
+        make_point(
+            "conch",
+            "Results > Table 2",
+            0,
+            chunk_type="table",
+            text=TEXT_C,
+            score=0.0159,
+        ),
+    ]
+
+
+class HybridHarness(RerankHarness):
+    """`RerankHarness` over a fake hybrid collection."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        super().__init__(tmp_path)
+        self.qdrant = HybridFakeQdrant(hybrid_points())  # type: ignore[assignment]
+
+
+@pytest.fixture
+def hybrid_harness(tmp_path: Path) -> HybridHarness:
+    return HybridHarness(tmp_path)
+
+
+class TestHybridConfigs:
+    def test_hybrid_is_built_on_prefix_with_its_own_collection(self) -> None:
+        prefix = runner.NAMED_CONFIGS["prefix"]
+        spec = runner.NAMED_CONFIGS["hybrid"]
+        assert spec.hybrid is True
+        assert spec.reranker is None
+        assert spec.collection == "eval_hybrid" == runner.HYBRID_COLLECTION
+        assert spec.embedder == prefix.embedder
+        assert spec.prefix == prefix.prefix
+        assert spec.rewrite is prefix.rewrite
+
+    def test_hybrid_rerank_adds_the_adopted_minilm_reranker(self) -> None:
+        spec = runner.NAMED_CONFIGS["hybrid_rerank"]
+        minilm = runner.NAMED_CONFIGS["rerank_minilm"]
+        assert spec.hybrid is True
+        assert (
+            spec.reranker == minilm.reranker == ("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        )
+        assert spec.collection == "eval_hybrid"
+        assert spec.prefix == minilm.prefix
+
+    def test_no_other_named_config_is_hybrid(self) -> None:
+        hybrids = {n for n, s in runner.NAMED_CONFIGS.items() if s.hybrid}
+        assert hybrids == {"hybrid", "hybrid_rerank"}
+
+    def test_options_resolve_with_the_plan_defaults(self) -> None:
+        hybrid = runner.make_run_options("hybrid", rewrite_model="m").config
+        assert hybrid.hybrid is True
+        assert hybrid.score_kind == "rrf"
+        assert hybrid.depth == 20
+        assert hybrid.prefilter_threshold == 0.6
+        assert hybrid.reranker is None
+
+        both = runner.make_run_options("hybrid_rerank", rewrite_model="m").config
+        assert both.hybrid is True
+        assert both.score_kind == "rerank"
+        assert both.rerank_query == "rewritten"
+        assert both.depth == 20
+
+    def test_dense_options_stay_not_hybrid(self) -> None:
+        for name in ("baseline", "prefix", "rerank_minilm"):
+            assert (
+                runner.make_run_options(name, rewrite_model="m").config.hybrid is False
+            )
+
+
+class TestHybridRun:
+    def test_hybrid_run_is_marked_rrf_and_uses_one_fused_query(
+        self, hybrid_harness: HybridHarness
+    ) -> None:
+        assert hybrid_harness.run(config="hybrid") == 0
+
+        record = load_run(hybrid_harness.runs / "hybrid.json")
+        config = record.meta.config
+        assert config["score_kind"] == "rrf"
+        assert config["hybrid"] is True
+        assert config["fusion"] == "rrf"
+        assert config["collection"] == "eval_hybrid"
+        assert config["prefilter_threshold"] == 0.6
+        assert config["reranker"] is None
+        assert record.meta.score_kind == "rrf"
+        for question in record.questions:
+            assert [(h.section, h.score) for h in question.hits] == [
+                ("Results", 0.0328),
+                ("Methods", 0.0161),
+                ("Results > Table 2", 0.0159),
+            ]
+            assert question.rerank_ms is None
+        assert hybrid_harness.reranker_loads == []
+        assert all("prefetch" in c for c in hybrid_harness.qdrant.query_calls)
+
+    def test_hybrid_report_is_honest_about_the_score_kind(
+        self, hybrid_harness: HybridHarness
+    ) -> None:
+        assert hybrid_harness.run(config="hybrid") == 0
+
+        report = (hybrid_harness.reports / "run-hybrid.md").read_text(encoding="utf-8")
+        assert "Score kind: rrf; threshold: 0.00" in report
+        assert "## Hybrid search" in report
+        assert "rank-based, neither cosine nor BM25" in report
+        assert "not cut at 0.6" in report
+        assert "## Reranker" not in report
+        # Nothing was lost to a 0.6 cut: the on-corpus questions have hits.
+        assert "Score kind: cosine" not in report
+
+    def test_hybrid_rerank_run_records_rerank_scores_and_the_dense_cut(
+        self, hybrid_harness: HybridHarness
+    ) -> None:
+        assert hybrid_harness.run(config="hybrid_rerank") == 0
+
+        record = load_run(hybrid_harness.runs / "hybrid_rerank.json")
+        config = record.meta.config
+        assert config["score_kind"] == "rerank"
+        assert config["hybrid"] is True
+        assert config["reranker"] == "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        assert config["rerank_query"] == "rewritten"
+        for question in record.questions:
+            assert [(h.section, h.score) for h in question.hits] == [
+                ("Results > Table 2", 0.9),
+                ("Results", 0.5),
+                ("Methods", 0.2),
+            ]
+            assert question.rerank_ms is not None
+        assert hybrid_harness.reranker_loads == ["cross-encoder/ms-marco-MiniLM-L-6-v2"]
+        report = (hybrid_harness.reports / "run-hybrid_rerank.md").read_text(
+            encoding="utf-8"
+        )
+        assert "Cosine cut of the dense list (inside the hybrid query)" in report
+        assert "Score kind: rerank; threshold: 0.00" in report
+
+    def test_a_plain_collection_fails_the_preflight_with_a_clear_message(
+        self,
+        hybrid_harness: HybridHarness,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        hybrid_harness.qdrant.params = SimpleNamespace(
+            vectors=SimpleNamespace(size=384), sparse_vectors=None
+        )
+        with caplog.at_level(logging.ERROR):
+            code = hybrid_harness.run(config="hybrid")
+        assert code == 1
+        assert "ingest --hybrid" in caplog.text
+        assert not hybrid_harness.runs.exists()
+
+
+class TestScoreKindHandling:
+    @staticmethod
+    def rrf_record(entries: Sequence[GoldenEntry], sha: str, name: str) -> RunRecord:
+        hits = (
+            RankedHit("maira_2", "Results", 0, "text", 0.0328),
+            RankedHit("maira_2", "Methods", 1, "text", 0.0161),
+        )
+        return RunRecord(
+            meta=RunMeta(
+                name=name,
+                config={"score_kind": "rrf", "hybrid": True},
+                golden_sha256=sha,
+                git_hash="g",
+                chunk_count=4,
+            ),
+            questions=tuple(QuestionRun(e.id, e.type, hits) for e in entries),
+        )
+
+    def test_compare_does_not_cut_an_rrf_run_at_0_6(self, harness: Harness) -> None:
+        sha = golden_sha256(harness.golden)
+        save_run(make_record(harness.entries, sha, "a"), harness.runs / "a.json")
+        save_run(self.rrf_record(harness.entries, sha, "h"), harness.runs / "h.json")
+
+        code = cli_main(
+            ["compare", "a", "h", *harness.paths(), "--resamples", "50"],
+            services=harness.services(),
+        )
+
+        assert code == 0
+        report = (harness.reports / "compare-h-vs-a.md").read_text(encoding="utf-8")
+        assert "A at k=5, t=0.60, B at k=5, t=0.00" in report
+
+    def test_run_summary_of_an_rrf_run_has_no_empty_on_corpus_questions(
+        self, harness: Harness
+    ) -> None:
+        sha = golden_sha256(harness.golden)
+        record = self.rrf_record(harness.entries, sha, "h")
+        from app.evaluation.compare import summarize_run
+
+        summary = summarize_run(record, harness.entries)
+        assert summary.threshold == 0.0
+        assert summary.empty_rate_on_corpus == 0.0
+
+    def test_pool_cuts_each_run_at_its_own_default(self) -> None:
+        entries = [golden_entries()[0]]
+        cosine = make_record(entries, name="dense")
+        rrf = self.rrf_record(entries, "x" * 64, "hybrid")
+
+        pools = authoring.pool_candidates([cosine, rrf], entries, k=10)
+
+        by_section = {c.section: c for c in pools["q001"]}
+        # The RRF run is not cut at 0.4, so its Methods hit is pooled; the cosine
+        # run's 0.3 hit is below its own 0.4 cut.
+        assert by_section["Methods"].runs == {"dense", "hybrid"}
+        assert "Introduction" not in by_section
+
+    def test_pool_threshold_overrides_every_run(self) -> None:
+        entries = [golden_entries()[0]]
+        rrf = self.rrf_record(entries, "x" * 64, "hybrid")
+
+        pools = authoring.pool_candidates([rrf], entries, k=10, threshold=0.4)
+
+        assert pools["q001"] == []  # everything is below an explicit 0.4
+
+    def test_pool_header_names_the_cut_of_each_run_when_they_differ(self) -> None:
+        entries = [golden_entries()[0]]
+        runs = [
+            make_record(entries, name="dense"),
+            self.rrf_record(entries, "x" * 64, "hybrid"),
+        ]
+        pools = authoring.pool_candidates(runs, entries, k=5)
+
+        text = authoring.render_pool(pools, entries, runs, k=5)
+
+        assert "t=0.40 (dense), t=0.00 (hybrid)" in text
+
+    def test_gate_report_of_an_rrf_run_names_the_score_kind(
+        self, harness: Harness
+    ) -> None:
+        sha = golden_sha256(harness.golden)
+        save_run(self.rrf_record(harness.entries, sha, "h"), harness.runs / "h.json")
+
+        code = cli_main(
+            ["curve", "h", "--gate", *harness.paths()], services=harness.services()
+        )
+
+        assert code == 0
+        report = (harness.reports / "gate-h.md").read_text(encoding="utf-8")
+        assert "Score kind: rrf" in report
+
+
+def test_rechunked_needs_a_name_and_a_collection() -> None:
+    with pytest.raises(runner.RunError, match="--rechunked needs"):
+        runner.make_run_options("rerank_minilm", rechunked=True)
+    with pytest.raises(runner.RunError, match="--rechunked needs"):
+        runner.make_run_options("rerank_minilm", name="x", rechunked=True)
+
+    options = runner.make_run_options(
+        "rerank_minilm", name="x", collection="eval_x", rechunked=True
+    )
+    assert options.rechunked
+    assert options.config.collection == "eval_x"

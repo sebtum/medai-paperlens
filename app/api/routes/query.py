@@ -21,6 +21,7 @@ from app.models.query import (
 )
 from app.retrieval.client import get_async_client
 from app.retrieval.embedding import EmbeddingProvider, get_embedding_provider
+from app.retrieval.rerank import Reranker, get_reranker
 from app.workflow.generate import _ERROR_ANSWER
 from app.workflow.graph import build_workflow
 from app.workflow.state import WorkflowState
@@ -41,16 +42,29 @@ def _initial_state(request: QueryRequest) -> WorkflowState:
         "grounded": False,
         "route": "",
         "score_threshold": request.score_threshold,
+        "rerank_top_score": None,
+        "rerank_fallback": False,
     }
 
 
-def _to_response(state: WorkflowState) -> QueryResponse:
+def _to_response(state: WorkflowState, reranker: Reranker | None) -> QueryResponse:
     return QueryResponse(
         answer=state["answer"],
         citations=state["citations"],
         confidence=state["confidence"],
         grounded=state["grounded"],
-        debug={"route": state["route"], "rewritten": state["rewritten"]},
+        debug={
+            "route": state["route"],
+            "rewritten": state["rewritten"],
+            # No model ran when the step fell back, so none is named.
+            "rerank_model": (
+                reranker.model_name
+                if reranker is not None and not state["rerank_fallback"]
+                else None
+            ),
+            "rerank_top_score": state["rerank_top_score"],
+            "rerank_fallback": state["rerank_fallback"],
+        },
     )
 
 
@@ -60,10 +74,11 @@ async def query(
     client: Annotated[AsyncQdrantClient, Depends(get_async_client)],
     provider: Annotated[EmbeddingProvider, Depends(get_embedding_provider)],
     llm: Annotated[LlmProvider, Depends(get_llm_provider)],
+    reranker: Annotated[Reranker | None, Depends(get_reranker)],
 ) -> QueryResponse:
-    workflow = build_workflow(client, provider, llm)
+    workflow = build_workflow(client, provider, llm, reranker)
     state = await workflow.ainvoke(_initial_state(request))
-    return _to_response(state)
+    return _to_response(state, reranker)
 
 
 @router.post("/query/stream", response_class=EventSourceResponse)
@@ -72,9 +87,10 @@ async def query_stream(
     client: Annotated[AsyncQdrantClient, Depends(get_async_client)],
     provider: Annotated[EmbeddingProvider, Depends(get_embedding_provider)],
     llm: Annotated[LlmProvider, Depends(get_llm_provider)],
+    reranker: Annotated[Reranker | None, Depends(get_reranker)],
 ) -> AsyncIterator[ServerSentEvent]:
     """Run the same workflow as ``/query`` and stream progress as SSE (ADR-0017)."""
-    workflow = build_workflow(client, provider, llm)
+    workflow = build_workflow(client, provider, llm, reranker)
     state = _initial_state(request)
     started: dict[str, float] = {}
     try:
@@ -88,16 +104,19 @@ async def query_stream(
                 if event is not None:
                     yield event
                 if (
-                    chunk.get("name") == "retrieve"
+                    chunk.get("name") == "rerank"
                     and "result" in chunk
                     and chunk.get("error") is None
                 ):
+                    # The final five come from rerank. Rerank leaves `confidence`
+                    # alone, so the cosine score set by retrieve is read from the
+                    # state (its "values" update came before rerank started).
                     result = chunk["result"] or {}
                     yield ServerSentEvent(
                         event="citations",
                         data=CitationsEvent(
                             citations=result.get("citations", []),
-                            confidence=result.get("confidence", 0.0),
+                            confidence=state["confidence"],
                         ),
                     )
             elif mode == "custom":
@@ -108,7 +127,7 @@ async def query_stream(
         logger.exception("query_stream: workflow failed")
         yield ServerSentEvent(event="error", data=ErrorEvent(message=_ERROR_ANSWER))
         state = {**state, "answer": _ERROR_ANSWER, "grounded": False}
-    yield ServerSentEvent(event="final", data=_to_response(state))
+    yield ServerSentEvent(event="final", data=_to_response(state, reranker))
 
 
 _pump_tasks: set[asyncio.Task[None]] = set()

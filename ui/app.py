@@ -149,6 +149,7 @@ _STEP_LABELS: dict[str, str] = {
     "classify": "Checking query",
     "rewrite": "Rewriting query",
     "retrieve": "Retrieving papers",
+    "rerank": "Reranking passages",
     "generate": "Generating answer",
     "validate": "Validating grounding",
 }

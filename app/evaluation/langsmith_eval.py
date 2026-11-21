@@ -5,8 +5,9 @@
 `app.evaluation.metrics`. The adapters add no maths of their own: they rebuild the hits
 and labels from the example, call the metric function and return the number.
 
-- Experiments run at one fixed cut-off, k = 5 and t = 0.6. Curves and k-sweeps are local
-  only.
+- Experiments run at one fixed k = 5. The threshold follows the run's score kind:
+  0.6 for cosine scores (`EXPERIMENT_THRESHOLD`), 0 for reranked and hybrid runs
+  (`RERANK_THRESHOLD`; their scores are not cosine). Curves and k-sweeps are local only.
 - The experiment metadata holds the run config (R3/R4): config, golden sha256, git hash,
   chunk count, k, threshold.
 - Every target or evaluator error is recorded in a `ScoreBook` and re-raised. LangSmith
@@ -34,6 +35,7 @@ from app.evaluation.compare import (
     Metric,
     RunMeta,
     RunRecord,
+    default_threshold,
     question_scores,
 )
 from app.evaluation.golden import GoldenEntry, QuestionType
@@ -53,6 +55,7 @@ from app.evaluation.target import (
 )
 from app.llm.base import LlmProvider
 from app.retrieval.embedding import EmbeddingProvider
+from app.retrieval.rerank import Reranker
 
 EXPERIMENT_K = 5
 EXPERIMENT_THRESHOLD = 0.6
@@ -87,6 +90,7 @@ def result_to_outputs(result: RankedResult) -> dict[str, Any]:
     """Target outputs: the query used and the ranked hits as plain lists (JSON-safe)."""
     return {
         "query": result.query,
+        "rerank_ms": result.rerank_ms,
         "hits": [
             [h.paper_id, h.section, h.chunk_index, h.chunk_type, h.score]
             for h in result.hits
@@ -244,6 +248,7 @@ def make_target(
     client: AsyncQdrantClient,
     cache: RewriteCache | None,
     llm: LlmProvider | None,
+    reranker: Reranker | None = None,
 ) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
     """The async target `aevaluate` calls once per example.
 
@@ -267,7 +272,13 @@ def make_target(
                     "golden file; run scripts.sync_golden"
                 )
             result = await retrieve_ranked(
-                entry, config, embedder=embedder, client=client, cache=cache, llm=llm
+                entry,
+                config,
+                embedder=embedder,
+                client=client,
+                cache=cache,
+                llm=llm,
+                reranker=reranker,
             )
         except Exception as exc:
             book.fail(f"target {question_id or '<no id>'}", exc)
@@ -288,6 +299,7 @@ def experiment_metadata(
     """Experiment metadata = the run config (R3) plus golden and code version."""
     return {
         "run_name": meta.name,
+        "score_kind": meta.score_kind,
         "config": dict(meta.config),
         "golden_sha256": meta.golden_sha256,
         "git_hash": meta.git_hash,
@@ -320,16 +332,29 @@ async def run_experiment(
     aevaluate_fn: AevaluateFn,
     dataset_name: str = DATASET_NAME,
     k: int = EXPERIMENT_K,
-    threshold: float = EXPERIMENT_THRESHOLD,
+    threshold: float | None = None,
+    reranker: Reranker | None = None,
 ) -> ExperimentOutcome:
     """Run one LangSmith experiment (`aevaluate`) for `config` at (k, threshold).
+
+    Without `threshold` it follows the run's score kind (`default_threshold`): 0.6 for
+    cosine runs, 0 for reranked and hybrid runs.
 
     Raises `ExperimentError` if the target or any evaluator failed, including errors
     LangSmith would only have logged.
     """
+    if threshold is None:
+        threshold = default_threshold(meta)
     book = ScoreBook()
     target = make_target(
-        entries, config, book, embedder=embedder, client=client, cache=cache, llm=llm
+        entries,
+        config,
+        book,
+        embedder=embedder,
+        client=client,
+        cache=cache,
+        llm=llm,
+        reranker=reranker,
     )
     evaluators = make_evaluators(book, k=k, threshold=threshold)
     try:
@@ -365,9 +390,14 @@ def local_experiment_scores(
     golden: Sequence[GoldenEntry],
     *,
     k: int = EXPERIMENT_K,
-    threshold: float = EXPERIMENT_THRESHOLD,
+    threshold: float | None = None,
 ) -> dict[str, dict[str, float]]:
-    """The scores the evaluators should produce, computed by the local path."""
+    """The scores the evaluators should produce, computed by the local path.
+
+    Without `threshold` it follows the run's score kind, like `run_experiment`.
+    """
+    if threshold is None:
+        threshold = default_threshold(run.meta)
     cutoff = Cutoff(k, threshold)
     expected: dict[str, dict[str, float]] = {}
     metrics: tuple[Metric, ...] = ("recall", "mrr", "ndcg")

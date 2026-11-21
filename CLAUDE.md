@@ -35,9 +35,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Ingest into another collection (eval only, e.g. a second embedder; `papers` stays untouched)
 .\.venv\Scripts\python.exe -m scripts.ingest --collection eval_bge-base-en-v1.5
+.\.venv\Scripts\python.exe -m scripts.ingest --collection eval_hybrid --hybrid                # eval only: dense + BM25 sparse vector (ADR-0028)
+.\.venv\Scripts\python.exe -m scripts.ingest --collection eval_chunk256_merge --chunk-tokens 256 [--no-merge-peers]   # eval only: re-chunk (Phase 10, T11)
 
-# Retrieval eval (Phase 9; run as modules, needs Qdrant; golden set is LLM-labelled, not human-verified)
-.\.venv\Scripts\python.exe -m scripts.eval_retrieval run --config baseline --no-llm   # baseline | no_rewrite | prefix | bge_base; --langsmith also logs an experiment
+# Retrieval eval (Phases 9-10; run as modules, needs Qdrant; golden set is LLM-labelled, not human-verified)
+.\.venv\Scripts\python.exe -m scripts.eval_retrieval run --config baseline --no-llm   # baseline | no_rewrite | prefix | bge_base | rerank_minilm | rerank_bge | rerank_medcpt | hybrid | hybrid_rerank; --langsmith also logs an experiment
+.\.venv\Scripts\python.exe -m scripts.eval_retrieval run --config rerank_minilm --name rerank_minilm_d40 --depth 40 --no-llm   # --depth, --rerank-query, --reranker, --collection change a config and need --name; --rechunked for re-cut collections
 .\.venv\Scripts\python.exe -m scripts.eval_retrieval compare baseline prefix          # paired bootstrap on nDCG@5
 .\.venv\Scripts\python.exe -m scripts.eval_retrieval curve baseline                   # threshold curve
 .\.venv\Scripts\python.exe -m scripts.eval_retrieval sections --paper maira_2         # authoring: sections and chunk ids
@@ -79,13 +82,14 @@ MedAI PaperLens is a local-first AI engineering project for medical AI literatur
 Streamlit UI → FastAPI Backend → LangGraph Workflow
                                              ├── classify_node   (phrase-pattern safety filter)
                                              ├── rewrite_node    (Ollama query rewriter)
-                                             ├── retrieve_node   (Qdrant vector search)
+                                             ├── retrieve_node   (Qdrant vector search, top 20)
+                                             ├── rerank_node     (cross-encoder re-scores the 20, keeps the best 5)
                                              ├── generate_node   (Ollama LLM synthesis)
                                              └── validate_node   (grounding check)
                                            → Citation-grounded response
 ```
 
-### Current implementation (Phase 9 complete)
+### Current implementation (Phase 10 built, verify pending)
 
 **API layer**
 - `app/main.py` — FastAPI app factory; manages the active LLM provider's lifespan via `make_llm_provider()`; mounts `health_router`, `model_router`, and `query_router`; registers `UnsafeQueryError` exception handler.
@@ -106,7 +110,8 @@ Streamlit UI → FastAPI Backend → LangGraph Workflow
 - `app/workflow/graph.py` — `build_workflow(client, provider, llm)`: compiles the StateGraph; routes unsafe queries directly to END, safe queries through rewrite → retrieve → generate → validate.
 - `app/workflow/classify.py` — `classify_node`: phrase-pattern safety filter (frozenset of unsafe patterns); sets `is_unsafe` / `route`.
 - `app/workflow/rewrite.py` — `make_rewrite_node(llm)`: Ollama-backed query rewriter; falls back to original question on LLM error.
-- `app/workflow/retrieve.py` — `make_retrieve_node(client, provider)`: embeds rewritten query, runs Qdrant search, populates `citations` and `confidence`.
+- `app/workflow/retrieve.py` — `make_retrieve_node(client, provider)`: embeds rewritten query, runs Qdrant search for `RETRIEVE_DEPTH` (20) hits, populates `citations` and `confidence` (cosine, not changed by the reranker).
+- `app/workflow/rerank.py` — `make_rerank_node(reranker, *, keep=5)`: re-scores the 20 hits against the rewritten query (the original if the rewrite is empty) and keeps the best 5; `reranker=None` (off) just cuts to 5; a reranker error keeps the vector order, sets `rerank_fallback`, and the request still succeeds. Sets `rerank_top_score`; SSE `citations` is sent when this step ends (ADR-0026).
 - `app/workflow/generate.py` — `make_generate_node(llm, *, evidence_budget_tokens=4000)`: synthesises answer from evidence (`[n] title — section (p. page)` + excerpt; a chars/3 budget guard drops whole lowest-ranked items, never truncates) via `llm.stream()` (always streams; tokens go to the LangGraph stream writer, a no-op under `ainvoke`); on LLM failure emits an `error` event and returns an error message.
 - `app/workflow/validate.py` — `validate_node`: sets `grounded = True` when citations exist and answer is non-empty.
 
@@ -114,26 +119,27 @@ Streamlit UI → FastAPI Backend → LangGraph Workflow
 - `app/retrieval/client.py` — `get_async_client()`: FastAPI dependency for `AsyncQdrantClient`, reads `QDRANT_URL` from env.
 - `app/retrieval/embedding.py` — `EmbeddingProvider` Protocol; `get_embedding_provider()` FastAPI dependency; `SentenceTransformer` singleton; `get_model_name()` reads `EMBEDDING_MODEL` (default `BAAI/bge-small-en-v1.5`, ADR-0022; vector size comes from the model, no `VECTOR_DIM`); `SentenceTransformerProvider(model, query_prefix="")` prepends `query_prefix` in `embed()` (queries only, documents are never prefixed); `get_query_prefix()` reads `EMBEDDING_QUERY_PREFIX` (unset: BGE instruction for `BAAI/bge-*`, none otherwise; empty string = off; ADR-0025); `embed_async()` offloads to threadpool.
 - `app/retrieval/parsed.py` — `load_parsed(parsed_dir, paper_id)`: loads the cached Docling JSON (`DoclingDocument`) from `data/parsed/`; `None` + warning if missing/invalid/path-traversal.
-- `app/retrieval/chunking.py` — `chunk_paper(...)`: Docling `HybridChunker` over the parsed document plus the custom parts of ADR-0021 (heading levels, dropped sections, `Section > Subsection` label, token budget, manifest abstract = chunk 0); returns frozen `Chunk`s. No parsed file → abstract-only.
-- `app/retrieval/ingestion.py` — `ingest(papers_dir, client, model, *, model_name, parsed_dir=None, overwrite=False, tokenizer=None)`: chunks every manifest, embeds in batches, point ID = `uuid5(paper_id:chunk_index)`, deletes a paper's points by `paper_id` filter then upserts into collection `papers`; recreates the collection when vector size or `embedding_model` differs.
+- `app/retrieval/chunking.py` — `chunk_paper(...)`: Docling `HybridChunker` over the parsed document plus the custom parts of ADR-0021 (heading levels, dropped sections, `Section > Subsection` label, token budget, manifest abstract = chunk 0); returns frozen `Chunk`s. No parsed file → abstract-only. Optional `max_tokens` and `merge_peers` exist for the eval-only chunk-size experiment (ADR-0028 addendum); the app uses the defaults.
+- `app/retrieval/rerank.py` — `Reranker` Protocol (`model_name`, `score(query, passages)`, scores 0..1 by sigmoid); `CrossEncoderReranker` (sentence-transformers, loaded on first use, no warm-up); `get_reranker()` FastAPI dependency reading `RERANKER_MODEL` (unset: `cross-encoder/ms-marco-MiniLM-L-6-v2`; empty or `none`: off); a load error (`OSError`, `ValueError`) gives an `UnavailableReranker` that is remembered for 60 s, one request loads at a time, others get the stand-in at once; `reset_reranker_cache()` is for tests; `rerank_passage(title, section, text)` builds the text the model reads (ADR-0026).
+- `app/retrieval/ingestion.py` — `ingest(papers_dir, client, model, *, model_name, parsed_dir=None, overwrite=False, tokenizer=None, ...)`: chunks every manifest, embeds in batches, point ID = `uuid5(paper_id:chunk_index)`, deletes a paper's points by `paper_id` filter then upserts into collection `papers`; recreates the collection when vector size or `embedding_model` differs. Eval-only options `hybrid=True` (named dense vector plus a Qdrant-computed BM25 sparse vector) and `chunk_max_tokens` / `merge_peers` refuse the app collection `papers`.
 - `app/retrieval/consistency.py` — `embedding_model_mismatch()`: startup check that logs a warning when the collection's `embedding_model` differs from `EMBEDDING_MODEL` (never fails startup).
-- `app/retrieval/search.py` — `search(vector, client, top_k, score_threshold, *, collection_name=...)`: queries Qdrant (`DEFAULT_SCORE_THRESHOLD` = 0.6, measured inert in Phase 9 and kept, ADR-0025), parses payloads defensively (malformed optional fields become `None`), returns `(list[Citation], float)`. `search_hits(...)` returns scored `RankedHit`s (with `chunk_type`) for the eval.
+- `app/retrieval/search.py` — `search(vector, client, top_k, score_threshold, *, collection_name=...)`: queries Qdrant (`DEFAULT_SCORE_THRESHOLD` = 0.6, measured inert in Phase 9 and kept, ADR-0025), parses payloads defensively (malformed optional fields become `None`), returns `(list[Citation], float)`. `search_hits(...)` returns scored `RankedHit`s (with `chunk_type`) for the eval; `search_hits_hybrid(...)` (eval only, ADR-0028) fuses a dense and a BM25 prefetch by RRF.
 - `scripts/download_papers.py` — downloads the arXiv PDFs named in the manifests to `data/pdfs/` (gitignored); skips existing files, rate-limited.
 - `scripts/parse_papers.py` — host-only: Docling converts PDFs to `data/parsed/<paper_id>.json` (gitignored; Compose mounts it read-only). `docling` is in the optional `pdf` extra, never in the image; `docling-core[chunking]` is a main dependency.
 - `scripts/ingest.py` — CLI ingestion script; `--papers-dir` / `PAPERS_DIR`, `--parsed-dir` / `PARSED_DIR`; `--collection` (default `papers`, the app collection; eval embedders use `eval_<model-slug>`); `--overwrite` flag; loads `.env`; `sys.exit(1)` on failure.
 
-**Evaluation layer** (Phase 9; ADR-0023, ADR-0024, ADR-0025; no generation, retrieval only)
+**Evaluation layer** (Phases 9-10; ADR-0023, ADR-0024, ADR-0025, ADR-0026, ADR-0028; no generation, retrieval only)
 - `app/evaluation/metrics.py` — pure `RankedHit`, `cut`, `collapse_sections`, `recall_at_k`, `mrr_at_k`, `ndcg_at_k`, `precision_at_k` and `recall_ceiling_at_k` (reported, not in the decision rule), crowding and table-hit helpers over `(paper_id, section)` labels.
 - `app/evaluation/golden.py` — `GoldenEntry` / `Label` / `QuestionType`, `QUOTAS`, `load_golden`, `golden_sha256`, `validate_golden` (the golden-set rules).
 - `app/evaluation/target.py` — `RetrievalConfig`, `retrieve_ranked` (top 20 at threshold 0, one retrieval per run), the committed rewrite cache (a rewrite fallback is a run failure), `preflight` (stale-label and embedding-model check against Qdrant).
-- `app/evaluation/compare.py` — run records (`save_run` / `load_run`), stratified paired bootstrap, `verdict()` (the decision rule), per-type means and win/loss/tie counts.
+- `app/evaluation/compare.py` — run records (`save_run` / `load_run`; each run records its `score_kind`: `cosine`, `rerank` or `rrf`, and only cosine runs are cut at the 0.6 threshold), stratified paired bootstrap, `verdict()` (the decision rule), per-type means and win/loss/tie counts, and the refusal gate curve (`gate_curve`).
 - `app/evaluation/report.py` — markdown renderers for run summaries, comparisons and threshold curves; every header states the golden set is LLM-labelled, not human-verified.
-- `app/evaluation/runner.py` — the `run`, `compare`, `curve` logic and `NAMED_CONFIGS` (`baseline`, `no_rewrite`, `prefix`, `bge_base`); the eval embedder is built with an empty provider prefix so a config's prefix is added exactly once.
+- `app/evaluation/runner.py` — the `run`, `compare`, `curve` logic and `NAMED_CONFIGS` (`baseline`, `no_rewrite`, `prefix`, `bge_base`, `rerank_minilm`, `rerank_bge`, `rerank_medcpt`, `hybrid`, `hybrid_rerank`; options `--depth`, `--rerank-query`, `--reranker`, `--collection`, `--rechunked`); the eval embedder is built with an empty provider prefix so a config's prefix is added exactly once.
 - `app/evaluation/authoring.py` — `sections` and `pool` helpers for writing and adjudicating the golden set.
 - `app/evaluation/langsmith_sync.py` / `langsmith_eval.py` — dataset sync (git is the source of truth; hash stored on each example) and `aevaluate` adapters over the same metric functions.
 - `scripts/eval_retrieval.py` — thin CLI: `run | compare | curve | sections | pool`; loads `.env`; exit 1 on failure.
 - `scripts/sync_golden.py` — thin CLI: syncs `golden.jsonl` to the LangSmith dataset `paperlens-retrieval-golden`; refuses a dirty or invalid file.
-- `data/eval/` — `golden.jsonl` (50 questions, 150 labels, **LLM-labelled by Claude, not human-verified**), `rewrites.jsonl` (rewrite cache), `runs/*.json`, `reports/*.md`, `CHANGELOG.md`. No paper text. LF line endings are pinned in `.gitattributes` so the golden hash is stable.
+- `data/eval/` — `golden.jsonl` (65 questions: 45 on-corpus, 20 off-corpus; 164 labels; **LLM-labelled by Claude, not human-verified**), `rewrites.jsonl` (rewrite cache), `adjudicated.jsonl` (sections read and rejected as labels, with a reason), `runs/*.json`, `reports/*.md`, `CHANGELOG.md`. No paper text. LF line endings are pinned in `.gitattributes` so the golden hash is stable.
 
 - `data/papers/*.json` — 10 curated public medical-AI papers: manifests with metadata, abstract, versioned `arxiv_id` and `pdf_url` (corpus). Full text comes from the PDFs via the parsed cache.
 
@@ -155,7 +161,7 @@ Do not add the next layer until the current one is stable:
 4. ~~Streamlit UI~~ ✓
 5. ~~Docker Compose for full-stack local run~~ ✓
 
-Phases 7–11 (streaming, full-text ingestion, retrieval eval, rerank/hybrid, generation eval) are ordered in [`docs/roadmap.md`](docs/roadmap.md). Phase 7 (streaming) is merged (PR #11). Phase 8 (full-text ingestion) is merged (PR #12). Phase 9 (retrieval evaluation) is verified (ADR-0023/0024/0025; the BGE query prefix is the new default, the other defaults stay; `docs/phases/09-retrieval-evaluation/4-verify.md`); its PR is pending; next is Phase 10. Write each phase's ADRs during that phase's planning, not in advance.
+Phases 7–11 (streaming, full-text ingestion, retrieval eval, rerank/hybrid, generation eval) are ordered in [`docs/roadmap.md`](docs/roadmap.md). Phase 7 (streaming) is merged (PR #11). Phase 8 (full-text ingestion) is merged (PR #12). Phase 9 (retrieval evaluation) is merged (PR #13; ADR-0023/0024/0025; the BGE query prefix is the new default). Phase 10 (rerank and hybrid) is built on branch `phase-10-rerank-hybrid` and awaits its Verify stage: the MiniLM reranker is on by default (retrieve 20, keep 5; ADR-0026), hybrid search and smaller chunks were measured and not adopted (ADR-0028, Proposed); next is Phase 11. Write each phase's ADRs during that phase's planning, not in advance.
 
 ### Working process
 
@@ -195,5 +201,5 @@ All five must pass before a PR is mergeable (enforced in CI via GitHub Actions):
 ## Absolute constraints
 
 - No patient data, personal health information, or clinical decision support — ever.
-- No secrets committed to Git. Use environment variables (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_THINK`, `OLLAMA_NUM_CTX`, `EMBEDDING_MODEL`, `EMBEDDING_QUERY_PREFIX`, `PAPERS_DIR`, `PARSED_DIR`, `PDF_DIR`, `LLM_PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `QDRANT_URL`, `LOG_LEVEL`, `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, optional `LANGSMITH_ENDPOINT` for the EU region). Commit `.env.example`, never `.env`.
+- No secrets committed to Git. Use environment variables (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_THINK`, `OLLAMA_NUM_CTX`, `EMBEDDING_MODEL`, `EMBEDDING_QUERY_PREFIX`, `RERANKER_MODEL`, `PAPERS_DIR`, `PARSED_DIR`, `PDF_DIR`, `LLM_PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `QDRANT_URL`, `LOG_LEVEL`, `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, optional `LANGSMITH_ENDPOINT` for the EU region). Commit `.env.example`, never `.env`.
 - Do not make clinical claims in any generated output.

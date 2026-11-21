@@ -3,23 +3,26 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
+import pytest
 from asgi_lifespan import LifespanManager
-from conftest import TEST_VECTOR_DIM, FakeLlm
+from conftest import TEST_VECTOR_DIM, FakeLlm, FakeReranker
 from httpx import ASGITransport, AsyncClient, Response
 
 from app.llm.factory import get_llm_provider
 from app.main import app
+from app.retrieval import rerank
 from app.retrieval.client import get_async_client
 from app.retrieval.embedding import get_embedding_provider
+from app.retrieval.rerank import Reranker, get_reranker
 from app.workflow.generate import _ERROR_ANSWER
 
 _QUESTION = "How does AI perform in radiology?"
 
 
-def _point(score: float = 0.88) -> MagicMock:
+def _point(score: float = 0.88, title: str = "Radiology AI") -> MagicMock:
     point = MagicMock()
     point.payload = {
-        "title": "Radiology AI",
+        "title": title,
         "authors": ["C"],
         "year": 2023,
         "doi": None,
@@ -51,6 +54,8 @@ async def _post(
     points: list | None = None,
     qdrant_error: Exception | None = None,
     body: dict | None = None,
+    reranker: Reranker | None = None,
+    real_get_reranker: bool = False,
 ) -> Response:
     qdrant = AsyncMock()
     qdrant.query_points.return_value.points = points or []
@@ -62,6 +67,8 @@ async def _post(
     app.dependency_overrides[get_async_client] = lambda: qdrant
     app.dependency_overrides[get_embedding_provider] = lambda: embedder
     app.dependency_overrides[get_llm_provider] = lambda: fake_llm
+    if not real_get_reranker:
+        app.dependency_overrides[get_reranker] = lambda: reranker
     try:
         async with (
             LifespanManager(app) as manager,
@@ -93,8 +100,10 @@ async def test_stream_event_order() -> None:
         "step_start",
         "step_end",  # rewrite
         "step_start",
+        "step_end",  # retrieve
+        "step_start",
         "step_end",
-        "citations",  # retrieve
+        "citations",  # rerank
         "step_start",
         "token",
         "token",
@@ -104,7 +113,14 @@ async def test_stream_event_order() -> None:
         "final",
     ]
     nodes = [d["node"] for e, d in events if e == "step_start"]
-    assert nodes == ["classify", "rewrite", "retrieve", "generate", "validate"]
+    assert nodes == [
+        "classify",
+        "rewrite",
+        "retrieve",
+        "rerank",
+        "generate",
+        "validate",
+    ]
     assert all(d["elapsed_ms"] >= 0 for e, d in events if e == "step_end")
     assert [d["text"] for e, d in events if e == "token"] == ["AI ", "works."]
 
@@ -195,6 +211,7 @@ async def test_client_disconnect_cancels_graph_and_llm() -> None:
     app.dependency_overrides[get_async_client] = lambda: qdrant
     app.dependency_overrides[get_embedding_provider] = lambda: embedder
     app.dependency_overrides[get_llm_provider] = lambda: blocking
+    app.dependency_overrides[get_reranker] = lambda: None
 
     body = json.dumps({"question": _QUESTION}).encode()
     token_sent = asyncio.Event()
@@ -241,3 +258,138 @@ async def test_client_disconnect_cancels_graph_and_llm() -> None:
 
     assert token_sent.is_set()
     assert blocking.cancelled.is_set()
+
+
+def _ranked_points(count: int) -> list[MagicMock]:
+    """`count` hits in vector order: Paper 1 has the highest cosine score."""
+    return [_point(0.9 - 0.01 * n, f"Paper {n + 1}") for n in range(count)]
+
+
+async def test_stream_rerank_reorders_and_keeps_cosine_confidence() -> None:
+    reranker = FakeReranker(scores=[0.1, 0.2, 0.95])
+    response = await _post(
+        "/query/stream", FakeLlm(), points=_ranked_points(3), reranker=reranker
+    )
+    events = _parse_sse(response.text)
+
+    citations = next(d for e, d in events if e == "citations")
+    final = events[-1][1]
+    titles = [c["title"] for c in citations["citations"]]
+    assert titles == ["Paper 3", "Paper 2", "Paper 1"]
+    assert citations["confidence"] == 0.9  # cosine of the vector top hit
+    assert final["confidence"] == 0.9
+    assert [c["title"] for c in final["citations"]] == titles
+    assert final["debug"]["rerank_model"] == "fake-reranker"
+    assert final["debug"]["rerank_top_score"] == 0.95
+    assert final["debug"]["rerank_fallback"] is False
+
+
+async def test_stream_citations_come_after_rerank_ends() -> None:
+    response = await _post(
+        "/query/stream", FakeLlm(), points=_ranked_points(2), reranker=FakeReranker()
+    )
+    events = _parse_sse(response.text)
+
+    rerank_end = next(
+        i
+        for i, (e, d) in enumerate(events)
+        if e == "step_end" and d["node"] == "rerank"
+    )
+    assert events[rerank_end + 1][0] == "citations"
+    assert [e for e, _ in events].count("citations") == 1
+
+
+async def test_stream_rerank_off_cuts_to_five_in_vector_order() -> None:
+    response = await _post("/query/stream", FakeLlm(), points=_ranked_points(8))
+    events = _parse_sse(response.text)
+
+    final = events[-1][1]
+    assert [c["title"] for c in final["citations"]] == [
+        f"Paper {n}" for n in range(1, 6)
+    ]
+    assert final["debug"]["rerank_model"] is None
+    assert final["debug"]["rerank_top_score"] is None
+    assert "rerank" in [d["node"] for e, d in events if e == "step_start"]
+
+
+async def test_stream_rerank_error_falls_back_and_still_answers() -> None:
+    reranker = FakeReranker(error=RuntimeError("model crashed"))
+    response = await _post(
+        "/query/stream", FakeLlm(), points=_ranked_points(3), reranker=reranker
+    )
+    events = _parse_sse(response.text)
+
+    names = [e for e, _ in events]
+    assert "error" not in names
+    final = events[-1][1]
+    assert [c["title"] for c in final["citations"]] == [
+        "Paper 1",
+        "Paper 2",
+        "Paper 3",
+    ]
+    assert final["grounded"] is True
+    assert final["debug"]["rerank_model"] is None  # no model ran
+    assert final["debug"]["rerank_top_score"] is None
+    assert final["debug"]["rerank_fallback"] is True
+
+
+async def test_stream_survives_reranker_load_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real `get_reranker`, model name set, and the CrossEncoder load fails (the
+    # load raises OSError): the request must still succeed.
+    monkeypatch.setenv("RERANKER_MODEL", "org/missing-model")
+    monkeypatch.setattr(
+        rerank, "CrossEncoder", MagicMock(side_effect=OSError("no network"))
+    )
+    response = await _post(
+        "/query/stream",
+        FakeLlm(),
+        points=_ranked_points(8),
+        real_get_reranker=True,
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    assert "error" not in [e for e, _ in events]
+    final = events[-1][1]
+    assert [c["title"] for c in final["citations"]] == [
+        f"Paper {n}" for n in range(1, 6)
+    ]
+    assert final["grounded"] is True
+    assert final["debug"]["rerank_model"] is None
+    assert final["debug"]["rerank_top_score"] is None
+    assert final["debug"]["rerank_fallback"] is True
+
+
+async def test_query_survives_reranker_load_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RERANKER_MODEL", "org/missing-model")
+    monkeypatch.setattr(
+        rerank, "CrossEncoder", MagicMock(side_effect=OSError("no network"))
+    )
+    for _ in range(2):  # the second request reuses the remembered failure
+        response = await _post(
+            "/query", FakeLlm(), points=_ranked_points(8), real_get_reranker=True
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert [c["title"] for c in body["citations"]] == [
+            f"Paper {n}" for n in range(1, 6)
+        ]
+        assert body["debug"]["rerank_fallback"] is True
+
+
+async def test_query_returns_rerank_debug_fields() -> None:
+    reranker = FakeReranker(scores=[0.3, 0.8])
+    response = await _post(
+        "/query", FakeLlm(), points=_ranked_points(2), reranker=reranker
+    )
+
+    body = response.json()
+    assert [c["title"] for c in body["citations"]] == ["Paper 2", "Paper 1"]
+    assert body["confidence"] == 0.9
+    assert body["debug"]["rerank_model"] == "fake-reranker"
+    assert body["debug"]["rerank_top_score"] == 0.8

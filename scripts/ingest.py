@@ -45,6 +45,31 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--hybrid",
+        action="store_true",
+        help=(
+            "Eval only (ADR-0028): write a named dense vector plus a sparse BM25 "
+            "vector computed by Qdrant. Needs a non-default --collection, e.g. "
+            "eval_hybrid; the app collection is never written this way."
+        ),
+    )
+    parser.add_argument(
+        "--chunk-tokens",
+        type=int,
+        help=(
+            "Eval only (Phase 10, T11): cap chunks at this many tokens (embed text "
+            "including the title line). Needs a non-default --collection."
+        ),
+    )
+    parser.add_argument(
+        "--no-merge-peers",
+        action="store_true",
+        help=(
+            "Eval only (Phase 10, T11): keep Docling's pieces apart instead of "
+            "merging neighbours under one heading. Needs a non-default --collection."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Drop and recreate the collection before ingesting.",
@@ -54,6 +79,23 @@ if __name__ == "__main__":
     papers_dir = Path(args.papers_dir)
     if not papers_dir.is_dir():
         logger.error("Papers directory not found: %s", papers_dir)
+        sys.exit(1)
+
+    if args.hybrid and args.collection == COLLECTION_NAME:
+        logger.error(
+            "--hybrid is eval only: pass --collection eval_hybrid, not %r.",
+            COLLECTION_NAME,
+        )
+        sys.exit(1)
+
+    if (args.chunk_tokens is not None or args.no_merge_peers) and (
+        args.collection == COLLECTION_NAME
+    ):
+        logger.error(
+            "--chunk-tokens and --no-merge-peers are eval only: pass --collection "
+            "eval_..., not %r.",
+            COLLECTION_NAME,
+        )
         sys.exit(1)
 
     if args.overwrite:
@@ -73,6 +115,9 @@ if __name__ == "__main__":
             parsed_dir=Path(args.parsed_dir),
             overwrite=args.overwrite,
             collection_name=args.collection,
+            hybrid=args.hybrid,
+            chunk_max_tokens=args.chunk_tokens,
+            merge_peers=not args.no_merge_peers,
         )
         logger.info("Ingested %d chunks.", count)
     except Exception as exc:

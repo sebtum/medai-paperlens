@@ -163,3 +163,26 @@ def table_hit(
         hit.chunk_type == TABLE_CHUNK_TYPE and (hit.paper_id, hit.section) in labels
         for hit in cut(hits, k, threshold)
     )
+
+
+def wrong_section_share(
+    hits: Sequence[RankedHit], labels: Labels, k: int, threshold: float = 0.0
+) -> float:
+    """Share of the top-``k`` chunks from a labelled paper but an unlabelled section.
+
+    "Right paper, wrong section": the chunk's paper has at least one label for the
+    question, but the chunk's section has none. The denominator is the number of chunks
+    that pass the cut (0 when none do). ``threshold`` is optional so a reranked run
+    (cut at 0) and a cosine run (cut at 0.6) are both measured the way they are scored.
+    """
+    _validated(labels)
+    kept = cut(hits, k, threshold)
+    if not kept:
+        return 0.0
+    papers = {paper_id for paper_id, _ in labels}
+    wrong = sum(
+        1
+        for hit in kept
+        if hit.paper_id in papers and (hit.paper_id, hit.section) not in labels
+    )
+    return wrong / len(kept)

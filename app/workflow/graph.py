@@ -3,8 +3,10 @@ from qdrant_client import AsyncQdrantClient
 
 from app.llm.base import LlmProvider
 from app.retrieval.embedding import EmbeddingProvider
+from app.retrieval.rerank import Reranker
 from app.workflow.classify import classify_node
 from app.workflow.generate import make_generate_node
+from app.workflow.rerank import make_rerank_node
 from app.workflow.retrieve import make_retrieve_node
 from app.workflow.rewrite import make_rewrite_node
 from app.workflow.state import WorkflowState
@@ -21,12 +23,14 @@ def build_workflow(
     client: AsyncQdrantClient,
     provider: EmbeddingProvider,
     llm: LlmProvider,
+    reranker: Reranker | None,
 ):
     graph: StateGraph = StateGraph(WorkflowState)
 
     graph.add_node("classify", classify_node)
     graph.add_node("rewrite", make_rewrite_node(llm))
     graph.add_node("retrieve", make_retrieve_node(client, provider))
+    graph.add_node("rerank", make_rerank_node(reranker))
     graph.add_node("generate", make_generate_node(llm))
     graph.add_node("validate", validate_node)
 
@@ -37,7 +41,8 @@ def build_workflow(
         {"unsafe": END, "safe": "rewrite"},
     )
     graph.add_edge("rewrite", "retrieve")
-    graph.add_edge("retrieve", "generate")
+    graph.add_edge("retrieve", "rerank")
+    graph.add_edge("rerank", "generate")
     graph.add_edge("generate", "validate")
     graph.add_edge("validate", END)
 

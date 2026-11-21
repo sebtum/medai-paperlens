@@ -61,6 +61,9 @@ services:
       OLLAMA_BASE_URL: http://ollama:11434
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
       OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
+      # Unset = MiniLM (ADR-0026). Set to empty or "none" = reranking off (the step
+      # then only keeps the first 5 hits). Downloads on first use into huggingface_cache.
+      RERANKER_MODEL: ${RERANKER_MODEL-cross-encoder/ms-marco-MiniLM-L-6-v2}
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     depends_on:

@@ -33,11 +33,11 @@ def test_golden_set_has_no_rule_violations(entries: list[GoldenEntry]) -> None:
     assert violations == []
 
 
-def test_golden_set_has_fifty_entries_with_fixed_quotas(
+def test_golden_set_has_sixty_five_entries_with_fixed_quotas(
     entries: list[GoldenEntry],
 ) -> None:
-    assert len(entries) == 50
-    assert sum(QUOTAS.values()) == 50
+    assert len(entries) == 65
+    assert sum(QUOTAS.values()) == 65
     for qtype, quota in QUOTAS.items():
         assert sum(1 for e in entries if e.type is qtype) == quota
 

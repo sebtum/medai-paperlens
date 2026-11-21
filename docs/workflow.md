@@ -35,6 +35,29 @@ are committed in the phase PR together with its ADRs.
 - Handoff files stay short (one or two screens). Record decisions and reasons, not
   transcripts.
 
+## Writing handoff files
+
+Each file has two readers: the owner, who reads the page in the doc viewer, and the
+next session, which needs every detail. Write in two layers so both get what they need.
+
+- **Plain layer first.** Every decision, requirement, risk, task and finding opens with
+  1–2 plain sentences a non-expert can follow: what it is and why. No codes, no jargon.
+- **Details after a `Details:` marker.** The precise part (fields, thresholds, edge cases,
+  rejected options) goes into a paragraph that starts with `Details:`, or a nested bullet
+  that starts with `Details:`. The viewer folds everything from the marker to the next
+  heading (or to the end of that bullet list).
+- **Name every code.** Write "label check (U2)", never a bare "U2", and never a code in a
+  plain layer without its name.
+- **One fact per bullet.** Sentences under about 25 words. Explain a term the first time,
+  or use plain words instead.
+
+```markdown
+- **Check the labels before scoring.** The eval stops with a list of errors if a label
+  points to a section that does not exist.
+  - Details: scrolls the collection (payload only, ~600 points); also fails if the
+    collection's `embedding_model` differs from the run's embedder. CI runs the schema test only.
+```
+
 ## When to skip the process
 
 Do the change directly (quick check + five quality gates) when **all** hold:

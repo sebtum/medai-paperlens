@@ -40,6 +40,7 @@ from app.evaluation.metrics import (
     recall_at_k,
     recall_ceiling_at_k,
     table_hit,
+    wrong_section_share,
 )
 
 Metric = Literal["recall", "mrr", "ndcg", "precision", "recall_ceiling"]
@@ -75,6 +76,14 @@ class Cutoff:
 
 PRIMARY_CUTOFF = Cutoff(k=5, threshold=0.6)
 
+RERANK_THRESHOLD = 0.0
+"""Default cut-off for a run whose scores are not cosine: no cut.
+
+A reranked run already had its cosine pre-filter. A hybrid run (score kind ``rrf``) has
+rank-based fusion scores (about 0.01 to 0.03, RRF), so a cosine cut at 0.6 would drop
+every hit; its dense list was filtered at 0.6 inside the query instead.
+"""
+
 
 # --------------------------------------------------------------------------- run model
 
@@ -93,6 +102,28 @@ class RunMeta:
     git_hash: str
     chunk_count: int
 
+    @property
+    def score_kind(self) -> str:
+        """What the hit scores mean: ``cosine``, ``rerank`` or ``rrf``.
+
+        ``rrf`` is the fused score of a hybrid run (reciprocal rank fusion): rank-based,
+        neither cosine nor BM25, so it is never cut at the cosine threshold.
+
+        Runs written before Phase 10 have no ``score_kind`` in their config; they are
+        cosine runs.
+        """
+        return str(self.config.get("score_kind", "cosine"))
+
+
+def default_threshold(meta: RunMeta) -> float:
+    """Default cut-off threshold for a run: 0.6 for cosine scores, 0 for the others.
+
+    Reranked (``rerank``) and hybrid (``rrf``) runs are not cut: their scores are not
+    cosine values. An unknown score kind is treated as not cosine, so it is not cut at
+    0.6 by accident.
+    """
+    return PRIMARY_CUTOFF.threshold if meta.score_kind == "cosine" else RERANK_THRESHOLD
+
 
 @dataclass(frozen=True)
 class QuestionRun:
@@ -103,6 +134,8 @@ class QuestionRun:
     probe), ``None`` when not measured (off-corpus). ``chunk_tokens`` is an optional
     token estimate per hit, parallel to ``hits`` (no text stored); empty when unknown.
     ``query`` is the query text sent to the embedder (our own text, may be empty).
+    ``rerank_ms`` is the reranker time for this question in milliseconds (``None``
+    when no reranker ran).
     """
 
     id: str
@@ -111,6 +144,7 @@ class QuestionRun:
     ngram_overlap: int | None = None
     chunk_tokens: tuple[int, ...] = ()
     query: str = ""
+    rerank_ms: float | None = None
 
 
 @dataclass(frozen=True)
@@ -134,6 +168,8 @@ def _question_to_json(question: QuestionRun) -> dict[str, Any]:
     }
     if question.chunk_tokens:
         data["chunk_tokens"] = list(question.chunk_tokens)
+    if question.rerank_ms is not None:
+        data["rerank_ms"] = round(question.rerank_ms, 3)
     return data
 
 
@@ -211,6 +247,7 @@ def run_from_json(text: str, *, source: str = "<string>") -> RunRecord:
             )
             overlap = raw.get("ngram_overlap")
             tokens = tuple(int(t) for t in raw.get("chunk_tokens", ()))
+            rerank_ms = raw.get("rerank_ms")
             questions.append(
                 QuestionRun(
                     id=str(raw["id"]),
@@ -219,6 +256,7 @@ def run_from_json(text: str, *, source: str = "<string>") -> RunRecord:
                     ngram_overlap=None if overlap is None else int(overlap),
                     chunk_tokens=tokens,
                     query=str(raw.get("query", "")),
+                    rerank_ms=None if rerank_ms is None else float(rerank_ms),
                 )
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -401,6 +439,16 @@ class KRow:
     crowding: float | None
     table_hit_rate: float | None
     evidence_tokens: float | None
+    wrong_section_share: float | None = None
+
+
+@dataclass(frozen=True)
+class RerankTiming:
+    """Reranker time per question in milliseconds: median and 90th percentile."""
+
+    n: int
+    median_ms: float
+    p90_ms: float
 
 
 @dataclass(frozen=True)
@@ -430,6 +478,28 @@ class RunSummary:
     empty_rate_on_corpus: float | None
     no_result_rate_off_corpus: float | None
     max_off_corpus_top1: float | None
+    rerank_timing: RerankTiming | None = None
+
+
+def wrong_section_rate(
+    run: RunRecord, golden: Sequence[GoldenEntry], cutoff: Cutoff
+) -> float | None:
+    """Mean "right paper, wrong section" share of the top-k over on-corpus questions."""
+    values = [
+        wrong_section_share(question.hits, labels_of(entry), cutoff.k, cutoff.threshold)
+        for entry, question in _joined(run, golden)
+        if entry.type is not QuestionType.OFF_CORPUS
+    ]
+    return _mean(values) if values else None
+
+
+def rerank_timing(run: RunRecord) -> RerankTiming | None:
+    """Median and 90th percentile of the reranker time; ``None`` for a dense run."""
+    times = [q.rerank_ms for q in run.questions if q.rerank_ms is not None]
+    if not times:
+        return None
+    median, p90 = np.percentile(times, [50, 90])
+    return RerankTiming(n=len(times), median_ms=float(median), p90_ms=float(p90))
 
 
 def _types_in(golden: Sequence[GoldenEntry]) -> list[QuestionType]:
@@ -441,11 +511,17 @@ def summarize_run(
     run: RunRecord,
     golden: Sequence[GoldenEntry],
     *,
-    threshold: float = PRIMARY_CUTOFF.threshold,
+    threshold: float | None = None,
     ks: Sequence[int] = REPORT_KS,
     primary_k: int = PRIMARY_CUTOFF.k,
 ) -> RunSummary:
-    """Everything the run summary report shows, at ``threshold``."""
+    """Everything the run summary report shows, at ``threshold``.
+
+    Without ``threshold`` the cut-off follows the run's score kind
+    (``default_threshold``): 0.6 for cosine runs, 0 for reranked and hybrid runs.
+    """
+    if threshold is None:
+        threshold = default_threshold(run.meta)
     pairs = _joined(run, golden)
     labelled = [
         (entry, question)
@@ -473,6 +549,7 @@ def summarize_run(
                 crowding=crowding(run, golden, cutoff),
                 table_hit_rate=table_hit_rate(run, golden, cutoff),
                 evidence_tokens=evidence_tokens(run, golden, cutoff),
+                wrong_section_share=wrong_section_rate(run, golden, cutoff),
             )
         )
 
@@ -540,6 +617,7 @@ def summarize_run(
         empty_rate_on_corpus=empty_rate_on_corpus(run, golden, threshold),
         no_result_rate_off_corpus=no_result_rate_off_corpus(run, golden, threshold),
         max_off_corpus_top1=max_off_corpus_top1(run, golden),
+        rerank_timing=rerank_timing(run),
     )
 
 
@@ -604,6 +682,80 @@ def threshold_curve(
         n_on_corpus=n_on,
         n_off_corpus=len(golden) - n_on,
         points=tuple(points),
+    )
+
+
+# --------------------------------------------------------------------- gate curve
+
+
+def gate_thresholds() -> tuple[float, ...]:
+    """0 .. 1 in 0.05 steps, plus 0.01, 0.02, 0.98 and 0.99 for the steep ends.
+
+    Reranker scores pass through a sigmoid, so many sit very close to 0 or 1.
+    """
+    steps = {round(0.05 * step, 2) for step in range(21)}
+    steps.update({0.01, 0.02, 0.98, 0.99})
+    return tuple(sorted(steps))
+
+
+@dataclass(frozen=True)
+class GatePoint:
+    """Refusal at one threshold ``t``.
+
+    A question is refused when its top-1 score is below ``t`` or it has no hit at all.
+    """
+
+    threshold: float
+    off_refused: int
+    off_total: int
+    on_lost: int
+    on_total: int
+
+    @property
+    def off_refused_rate(self) -> float | None:
+        return self.off_refused / self.off_total if self.off_total else None
+
+    @property
+    def on_lost_rate(self) -> float | None:
+        return self.on_lost / self.on_total if self.on_total else None
+
+
+@dataclass(frozen=True)
+class GateCurve:
+    meta: RunMeta
+    n_on_corpus: int
+    n_off_corpus: int
+    points: tuple[GatePoint, ...]
+
+
+def gate_curve(
+    run: RunRecord,
+    golden: Sequence[GoldenEntry],
+    *,
+    thresholds: Sequence[float] | None = None,
+) -> GateCurve:
+    """Refusal on the top-1 score only, swept over ``thresholds`` (default 0 to 1).
+
+    For each ``t``: how many off-corpus questions would be refused (good) and how many
+    on-corpus questions would be refused too (lost). Quality metrics are not part of
+    this curve; the cut-off is chosen by the owner after seeing it.
+    """
+    steps = tuple(thresholds) if thresholds is not None else gate_thresholds()
+    pairs = _joined(run, golden)
+    off = [q for e, q in pairs if e.type is QuestionType.OFF_CORPUS]
+    on = [q for e, q in pairs if e.type is not QuestionType.OFF_CORPUS]
+    points = tuple(
+        GatePoint(
+            threshold=t,
+            off_refused=sum(is_empty(q.hits, t) for q in off),
+            off_total=len(off),
+            on_lost=sum(is_empty(q.hits, t) for q in on),
+            on_total=len(on),
+        )
+        for t in steps
+    )
+    return GateCurve(
+        meta=run.meta, n_on_corpus=len(on), n_off_corpus=len(off), points=points
     )
 
 

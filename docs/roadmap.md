@@ -14,7 +14,7 @@ works end to end, but it is not yet a meaningful RAG system:
 - **Abstract-only corpus.** `data/papers/*.json` holds 10 abstracts, indexed as one
   vector per paper. Retrieval is effectively "pick 1 of 10".
 - **Weak embeddings for long text.** `all-MiniLM-L6-v2` is tuned for short inputs.
-- **No reranking**, no keyword/hybrid search.
+- **No reranking**, no keyword/hybrid search (added or measured in Phase 10).
 - **Blocking UI.** `POST /query` returns only after generation finishes, and the
   UI shows a spinner for the whole duration.
 - **Stub grounding check.** `validate_node` sets `grounded = True` whenever
@@ -61,7 +61,7 @@ These shape more than one phase, so they are settled up front.
 | 7 ✓ | Streaming | Tokens and step status (rewriting, retrieving, generating) are visible in the UI as they happen. `POST /query` stays unchanged for tests and eval. Opt-in LangSmith tracing for per-node latency and inputs/outputs. | SSE `POST /query/stream` endpoint; `stream()` on the LLM provider interface; LangSmith for observability and evaluation |
 | 8 ✓ | Full-text ingestion | Parse PDFs (Docling), chunk by document structure, upgrade the embedding model, and show section/page citations. | Docling as PDF parser (ADR-0020); chunking with Docling's HybridChunker and chunk/citation identity (ADR-0021); default embedder `bge-small-en-v1.5` (ADR-0022) |
 | 9 ✓ | Retrieval evaluation | Golden set of 50 questions, **Claude-authored and LLM-labelled, not human-verified** (the owner had no time for the human filter; changed from the Gemini-drafted plan), stored in git and synced to a LangSmith dataset. Each retrieval configuration is a run (local files, optionally a LangSmith experiment). Recall@k, MRR and nDCG@k are custom functions over paper + section labels. Outcome: the BGE query prefix is adopted; threshold 0.6, `top_k` 5, rewrite on and `bge-small-en-v1.5` are kept. | Golden-set methodology (ADR-0023); dataset versioning and eval runner (ADR-0024); retrieval defaults after the eval (ADR-0025) |
-| 10 | Rerank and hybrid search | Retrieve top 20, rerank with a cross-encoder, keep top 5. Optionally BM25 + dense fusion (RRF) in Qdrant. Each change is justified by Phase 9 numbers. Phase 9 findings that may feed the scope: see [below](#phase-9-findings-that-feed-phase-10). | Reranker model; whether hybrid search is worth it |
+| 10 ✓ | Rerank and hybrid search | Retrieve top 20, rerank with a cross-encoder, keep top 5. BM25 + dense fusion (RRF) and a smaller chunk size were measured as eval-only experiments. Each change was judged with the Phase 9 decision rule on a golden set grown to 65 questions (20 off-corpus) and 164 labels, still LLM-labelled and not human-verified. Outcome: the MiniLM reranker is adopted (nDCG@5 0.683 against 0.565 for dense search alone, on the final golden set); no refusal rule; hybrid search and 256-token chunks are not adopted (no safe gain on top of the reranker). Smaller chunks halve the evidence text and the reranker time, to be judged in Phase 11. | Reranker (ADR-0026); hybrid search and the chunk-size addendum (ADR-0028, Proposed) |
 | 11 | Generation and safety eval | LangSmith LLM-as-judge evaluators (Gemini as judge model) scoring faithfulness, citation correctness, and relevance. Human ratings collected through LangSmith annotation queues, replacing the CSV sheet from [`scripts/eval_llm.py`](../scripts/eval_llm.py) as the calibration source; judge-human agreement reported as Cohen's κ. Precision/recall of the safety filter. Replace the stub `validate_node` based on findings. | Judge model, rubric and calibration method (amends ADR-0016); grounding validator design |
 
 ### Phase 9 findings that feed Phase 10
@@ -114,8 +114,8 @@ main loss is ranking. Pick these up in the stage shown:
 
 | # | Follow-up | Pick up in | Trigger or condition |
 |---|---|---|---|
-| 1 | Reranker (retrieve 20, rerank, keep 5), judged with the Phase 9 runs and bootstrap rule | Phase 10 Discuss | First candidate. Targets the 0.82 to 0.53 gap, and doubles as the off-corpus refusal signal (option 3 above) |
-| 2 | Chunk-size experiment: token budget 256, `merge_peers` on and off, new collection `eval_chunk256`, bootstrap against baseline | Phase 10 Discuss (after the reranker is measured) | Only if a reranker leaves a large "right paper, wrong section" share. Decision rule applies because it may change a default |
+| 1 | ~~Reranker (retrieve 20, rerank, keep 5), judged with the Phase 9 runs and bootstrap rule~~ Done in Phase 10: MiniLM adopted (ADR-0026), no refusal rule | Phase 10 Discuss | First candidate. Targets the 0.82 to 0.53 gap, and doubles as the off-corpus refusal signal (option 3 above) |
+| 2 | ~~Chunk-size experiment~~ Done in Phase 10, not adopted (ADR-0028 addendum): token budget 256, `merge_peers` on and off, new collection `eval_chunk256`, bootstrap against baseline | Phase 10 Discuss (after the reranker is measured) | Only if a reranker leaves a large "right paper, wrong section" share. Decision rule applies because it may change a default |
 | 3 | Cap of chunks per section in `retrieve_node` (cap 1 or 2) | Phase 11 | Our metrics cannot see its cost (a needed second chunk of a section). Adopt only if the generation eval shows no drop in answer quality |
 | 4 | Biomedical embedder (MedCPT, PubMedBERT; see Open questions) | Phase 10 Discuss, after 1 and 2 | `bge_base` was not clearly better and wrong-paper hits are about 20 %, so low priority |
 | 5 | Automatic pooling with an LLM judge (recurring job behind `LlmProvider`, human calibration on about 50 pairs) | Phase 11 | Only if a later second-reader pass finds many missing labels. The first pass found 0 of 24 |

@@ -13,6 +13,7 @@ from app.evaluation.compare import (
     FEW_QUESTIONS,
     Comparison,
     Cutoff,
+    GateCurve,
     RunMeta,
     RunSummary,
     ThresholdCurve,
@@ -60,6 +61,75 @@ def _cutoff_text(cutoff: Cutoff) -> str:
     return f"k={cutoff.k}, t={cutoff.threshold:.2f}"
 
 
+def _megabytes(size: object) -> str:
+    return NOT_AVAILABLE if not isinstance(size, int) else f"{size / 1e6:.0f} MB"
+
+
+def _reranker_lines(summary: RunSummary) -> list[str]:
+    """Reranker section of a run report: model, load, disk size, time per question."""
+    config = summary.meta.config
+    timing = summary.rerank_timing
+    if config.get("reranker") is None and timing is None:
+        return []
+    load = config.get("reranker_load_s")
+    rows = [
+        ["Reranker model", str(config.get("reranker", NOT_AVAILABLE))],
+        ["Query text", str(config.get("rerank_query", NOT_AVAILABLE))],
+        [
+            (
+                "Cosine cut of the dense list (inside the hybrid query)"
+                if config.get("hybrid")
+                else "Cosine pre-filter"
+            ),
+            _num(config.get("prefilter_threshold"), 2),
+        ],
+        ["Load time", f"{load:.1f} s" if isinstance(load, (int, float)) else "n/a"],
+        ["Disk size", _megabytes(config.get("reranker_disk_bytes"))],
+    ]
+    if timing is None:
+        rows.append(["Time per question", NOT_AVAILABLE])
+    else:
+        rows.append(
+            ["Time per question, median", f"{timing.median_ms:.0f} ms (n={timing.n})"]
+        )
+        rows.append(["Time per question, 90th percentile", f"{timing.p90_ms:.0f} ms"])
+    return [
+        "## Reranker",
+        "",
+        "Scores are reranker output (sigmoid, 0 to 1), not cosine. The time is one "
+        "reranker call per question, measured after one warm-up call, on this "
+        "machine; it excludes the vector search and the rewrite.",
+        "",
+        _table(["Measure", "Value"], rows),
+        "",
+    ]
+
+
+def _hybrid_lines(summary: RunSummary) -> list[str]:
+    """Note for a hybrid run: what its scores are and what the dense list was cut at."""
+    config = summary.meta.config
+    if not config.get("hybrid"):
+        return []
+    lines = [
+        "## Hybrid search",
+        "",
+        "Hits come from one Qdrant query: a dense list (cosine at or above "
+        f"{_num(config.get('prefilter_threshold'), 2)}) and a BM25 keyword list, "
+        "merged by reciprocal rank fusion (RRF). The keyword query is the same "
+        "rewritten question without the dense instruction prefix.",
+        "",
+    ]
+    if summary.meta.score_kind == "rrf":
+        lines += [
+            "Scores are RRF values: rank-based, neither cosine nor BM25, and small "
+            "(they cannot be compared with the dense runs' cosine scores). The run is "
+            "not cut at 0.6; the cosine cut already applies to the dense list inside "
+            "the query. Treat the score as an order, not as a confidence.",
+            "",
+        ]
+    return lines
+
+
 def render_run_summary(summary: RunSummary) -> str:
     """Run summary: k = 3/5/10 table, per-type table, rates, n-gram overlap."""
     meta = summary.meta
@@ -68,7 +138,8 @@ def render_run_summary(summary: RunSummary) -> str:
             f"Retrieval run: {meta.name}",
             [
                 _run_block("Run", meta),
-                f"- Threshold: {summary.threshold:.2f}; "
+                f"- Score kind: {meta.score_kind}; threshold: "
+                f"{summary.threshold:.2f}; "
                 f"{summary.n_on_corpus} on-corpus and {summary.n_off_corpus} "
                 "off-corpus questions",
             ],
@@ -80,6 +151,9 @@ def render_run_summary(summary: RunSummary) -> str:
         "by the best the k slots allow, min(k, number of labels); 1.00 means as many "
         "labelled sections as k slots can hold. Both are reported, not used by the "
         "decision rule. "
+        "Wrong section is the share of the top-k chunks that come from a paper with a "
+        "label for the question but from a section without one (right paper, wrong "
+        "section). "
         "Crowding is the mean number of distinct papers in the top-k chunks. "
         "Table hit rate is the share of `table` questions with a table chunk in a "
         "labelled section in the top-k. Evidence tokens are the mean token estimate of "
@@ -94,6 +168,7 @@ def render_run_summary(summary: RunSummary) -> str:
                 "MRR",
                 "Precision",
                 "Recall vs ceiling",
+                "Wrong section",
                 "Crowding",
                 "Table hit rate",
                 "Evidence tokens",
@@ -106,6 +181,7 @@ def render_run_summary(summary: RunSummary) -> str:
                     _num(row.mrr),
                     _num(row.precision),
                     _num(row.recall_ceiling),
+                    _num(row.wrong_section_share),
                     _num(row.crowding, 2),
                     _num(row.table_hit_rate),
                     _num(row.evidence_tokens, 0),
@@ -114,6 +190,8 @@ def render_run_summary(summary: RunSummary) -> str:
             ],
         ),
         "",
+        *_hybrid_lines(summary),
+        *_reranker_lines(summary),
         "## By question type (k=5)",
         "",
         "The n-gram overlap is the longest run of words a question shares with its "
@@ -328,6 +406,59 @@ def render_threshold_curve(curve: ThresholdCurve) -> str:
         out.append(
             f"Only {curve.n_off_corpus} off-corpus questions: the no-result rate "
             f"moves in steps of {step:.2f}, so the threshold part is coarse."
+        )
+    out.append("")
+    return "\n".join(out)
+
+
+def render_gate_curve(curve: GateCurve) -> str:
+    """Refusal curve on the top-1 score: one row per threshold t."""
+
+    def share(count: int, total: int) -> str:
+        return f"{count} / {total}" if total else NOT_AVAILABLE
+
+    out = [
+        _header(
+            f"Refusal curve: {curve.meta.name}",
+            [
+                _run_block("Run", curve.meta),
+                f"- Score kind: {curve.meta.score_kind}; {curve.n_on_corpus} on-corpus "
+                f"and {curve.n_off_corpus} off-corpus questions",
+            ],
+        ),
+        "A question is refused at t when its top-1 score is below t, or when it has no "
+        "hit at all (a reranked run drops hits below the cosine pre-filter first). "
+        "Only the top-1 score is used. Off-corpus refused is good. On-corpus lost is "
+        "the cost: questions the papers do cover that would be refused too.",
+        "",
+        _table(
+            [
+                "t",
+                "Off-corpus refused",
+                "Off-corpus refused rate",
+                "On-corpus lost",
+                "On-corpus lost rate",
+            ],
+            [
+                [
+                    f"{point.threshold:.2f}",
+                    share(point.off_refused, point.off_total),
+                    _num(point.off_refused_rate, 2),
+                    share(point.on_lost, point.on_total),
+                    _num(point.on_lost_rate, 2),
+                ]
+                for point in curve.points
+            ],
+        ),
+        "",
+        "The cut-off is chosen by the owner after seeing this curve. A cut-off picked "
+        "on the same questions it is scored on looks better than it will be on new "
+        "ones.",
+    ]
+    if 0 < curve.n_off_corpus < FEW_QUESTIONS:
+        out.append(
+            f"Only {curve.n_off_corpus} off-corpus questions: the refused rate "
+            f"moves in steps of {1 / curve.n_off_corpus:.2f}."
         )
     out.append("")
     return "\n".join(out)

@@ -6,8 +6,11 @@ anything that touches the outside world (Qdrant, the embedder, the rewrite LLM,
 LangSmith, git) comes in through `Services`, so tests need none of them.
 
 - `run_command`: pre-flight, retrieve, write `runs/<name>.json` and a report; with
-  `langsmith` also an experiment whose scores must equal the local ones.
-- `compare_command`, `curve_command`: reports from stored runs only.
+  `langsmith` also an experiment whose scores must equal the local ones. A config with a
+  reranker loads it once, times the load, makes one warm-up call, then times one
+  reranker call per question (Phase 10).
+- `compare_command`, `curve_command`: reports from stored runs only. Their default
+  cut-off follows each run's score kind (0.6 cosine, 0 for rerank and rrf).
 - Failures raise (`EVAL_ERRORS` are the expected ones); nothing here swallows an error.
 - No paper text is written anywhere: chunk text is read into memory for the token
   estimate and the n-gram probe only.
@@ -17,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -34,6 +38,8 @@ from app.evaluation.compare import (
     RunMeta,
     RunRecord,
     compare_runs,
+    default_threshold,
+    gate_curve,
     load_run,
     save_run,
     summarize_run,
@@ -51,7 +57,6 @@ from app.evaluation.golden import (
 )
 from app.evaluation.langsmith_eval import (
     EXPERIMENT_K,
-    EXPERIMENT_THRESHOLD,
     AevaluateFn,
     ExperimentError,
     check_against_local,
@@ -61,18 +66,22 @@ from app.evaluation.langsmith_eval import (
 from app.evaluation.langsmith_sync import DATASET_NAME, GitError, git_short_hash
 from app.evaluation.report import (
     render_comparison,
+    render_gate_curve,
     render_run_summary,
     render_threshold_curve,
 )
 from app.evaluation.target import (
     DEFAULT_DEPTH,
+    DEFAULT_PREFILTER_THRESHOLD,
     DEFAULT_REWRITES_PATH,
     PreflightError,
+    RerankQuery,
     RetrievalConfig,
     RewriteCache,
     RewriteCacheMissError,
     RewriteFallbackError,
     RewriteKey,
+    fetch_chunk_payloads,
     longest_shared_ngram,
     parse_source_chunk,
     preflight,
@@ -85,7 +94,8 @@ from app.retrieval.embedding import (
     EmbeddingProvider,
     SentenceTransformerProvider,
 )
-from app.retrieval.ingestion import COLLECTION_NAME, point_id
+from app.retrieval.ingestion import COLLECTION_NAME
+from app.retrieval.rerank import Reranker
 from app.workflow.generate import _estimated_tokens
 
 logger = logging.getLogger(__name__)
@@ -103,8 +113,15 @@ DEFAULT_REWRITES = REPO_ROOT / DEFAULT_REWRITES_PATH
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 BGE_BASE_MODEL = "BAAI/bge-base-en-v1.5"
 BGE_BASE_COLLECTION = "eval_bge-base-en-v1.5"
+HYBRID_COLLECTION = "eval_hybrid"
+"""Eval-only collection with the hybrid layout (`ingest --hybrid`)."""
 
-_TEXT_FIELDS = ["text", "paper_id", "chunk_index"]
+RERANKER_MODELS: dict[str, str] = {
+    "minilm": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "bge": "BAAI/bge-reranker-base",
+    "medcpt": "ncbi/MedCPT-Cross-Encoder",
+}
+"""The three candidate rerankers (Phase 10); `--reranker` also takes a short alias."""
 
 GitRunner = Callable[[Sequence[str]], str]
 
@@ -131,12 +148,14 @@ EVAL_ERRORS: tuple[type[Exception], ...] = (
 
 @dataclass(frozen=True)
 class ConfigSpec:
-    """A named run configuration (the plan's four runs)."""
+    """A named run configuration (the plan's four runs, then the reranker runs)."""
 
     embedder: str
     collection: str
     prefix: str = ""
     rewrite: bool = True
+    reranker: str | None = None
+    hybrid: bool = False
 
 
 NAMED_CONFIGS: dict[str, ConfigSpec] = {
@@ -146,6 +165,41 @@ NAMED_CONFIGS: dict[str, ConfigSpec] = {
         DEFAULT_EMBEDDING_MODEL, COLLECTION_NAME, prefix=BGE_QUERY_PREFIX
     ),
     "bge_base": ConfigSpec(BGE_BASE_MODEL, BGE_BASE_COLLECTION),
+    # The reranker runs are built on `prefix`, the default dense setup (ADR-0025).
+    "rerank_minilm": ConfigSpec(
+        DEFAULT_EMBEDDING_MODEL,
+        COLLECTION_NAME,
+        prefix=BGE_QUERY_PREFIX,
+        reranker=RERANKER_MODELS["minilm"],
+    ),
+    "rerank_bge": ConfigSpec(
+        DEFAULT_EMBEDDING_MODEL,
+        COLLECTION_NAME,
+        prefix=BGE_QUERY_PREFIX,
+        reranker=RERANKER_MODELS["bge"],
+    ),
+    "rerank_medcpt": ConfigSpec(
+        DEFAULT_EMBEDDING_MODEL,
+        COLLECTION_NAME,
+        prefix=BGE_QUERY_PREFIX,
+        reranker=RERANKER_MODELS["medcpt"],
+    ),
+    # Hybrid search (Phase 10, ADR-0028): dense plus BM25 merged by RRF, on the
+    # collection `eval_hybrid`. `hybrid` is measured only; `hybrid_rerank` adds the
+    # adopted reranker (MiniLM, depth 20, rewritten query) and is the decision run.
+    "hybrid": ConfigSpec(
+        DEFAULT_EMBEDDING_MODEL,
+        HYBRID_COLLECTION,
+        prefix=BGE_QUERY_PREFIX,
+        hybrid=True,
+    ),
+    "hybrid_rerank": ConfigSpec(
+        DEFAULT_EMBEDDING_MODEL,
+        HYBRID_COLLECTION,
+        prefix=BGE_QUERY_PREFIX,
+        reranker=RERANKER_MODELS["minilm"],
+        hybrid=True,
+    ),
 }
 
 
@@ -178,6 +232,32 @@ def _default_embedder(model_name: str) -> EmbeddingProvider:
     return SentenceTransformerProvider(SentenceTransformer(model_name), query_prefix="")
 
 
+def _default_reranker(model_name: str) -> Reranker:
+    from app.retrieval import rerank
+
+    # Through the module, so the test fixture that blocks real model loads applies.
+    return rerank.CrossEncoderReranker(
+        rerank.CrossEncoder(model_name, max_length=rerank.RERANKER_MAX_LENGTH),
+        model_name=model_name,
+    )
+
+
+def _default_reranker_disk_bytes(model_name: str) -> int | None:
+    """Size of the model in the local Hugging Face cache in bytes, `None` if absent.
+
+    This is the whole cached repository, every stored revision and file together.
+    """
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        for repo in scan_cache_dir().repos:
+            if repo.repo_type == "model" and repo.repo_id == model_name:
+                return int(repo.size_on_disk)
+    except Exception:
+        logger.warning("Cannot read the Hugging Face cache for %s", model_name)
+    return None
+
+
 def _default_llm() -> Any:
     from app.llm.factory import make_llm_provider
 
@@ -203,6 +283,8 @@ class Services:
     embedder_factory: Callable[[str], EmbeddingProvider] = _default_embedder
     llm_factory: Callable[[], Any] = _default_llm
     aevaluate_factory: Callable[[], AevaluateFn] = _default_aevaluate
+    reranker_factory: Callable[[str], Reranker] = _default_reranker
+    reranker_disk_bytes: Callable[[str], int | None] = _default_reranker_disk_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -303,11 +385,15 @@ class RunOptions:
     no_llm: bool = False
     langsmith: bool = False
     dataset_name: str | None = None
+    rechunked: bool = False
 
 
-def _config_dict(options: RunOptions) -> dict[str, Any]:
+def _config_dict(
+    options: RunOptions, reranker_info: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The run header's config. `reranker_info` adds load time and disk size."""
     config = options.config
-    return {
+    data: dict[str, Any] = {
         "config_name": options.config_name,
         "embedder": config.embedder,
         "collection": config.collection,
@@ -318,7 +404,20 @@ def _config_dict(options: RunOptions) -> dict[str, Any]:
         "depth": config.depth,
         "retrieval_threshold": 0.0,
         "golden_validated": not options.skip_validate,
+        "score_kind": config.score_kind,
+        "reranker": config.reranker,
     }
+    if options.rechunked:
+        data["rechunked"] = True
+    if config.hybrid:
+        data["hybrid"] = True
+        data["prefilter_threshold"] = config.prefilter_threshold
+        data["fusion"] = "rrf"
+    if config.reranker is not None:
+        data["rerank_query"] = config.rerank_query
+        data["prefilter_threshold"] = config.prefilter_threshold
+        data.update(reranker_info or {})
+    return data
 
 
 async def fetch_chunk_texts(
@@ -327,31 +426,10 @@ async def fetch_chunk_texts(
     """Chunk text by `(paper_id, chunk_index)` for the chunks that have any.
 
     The text only lives in memory: it feeds the token estimate and the n-gram probe.
+    The payload read (title and text) is shared with the reranker's passages.
     """
-    wanted = sorted(set(refs))
-    if not wanted:
-        return {}
-    records = await client.retrieve(
-        collection_name=collection,
-        ids=[point_id(paper_id, index) for paper_id, index in wanted],
-        with_payload=_TEXT_FIELDS,
-        with_vectors=False,
-    )
-    texts: dict[tuple[str, int], str] = {}
-    for record in records:
-        payload = record.payload or {}
-        paper_id, index, text = (
-            payload.get("paper_id"),
-            payload.get("chunk_index"),
-            payload.get("text"),
-        )
-        if (
-            isinstance(paper_id, str)
-            and isinstance(index, int)
-            and isinstance(text, str)
-        ):
-            texts[(paper_id, index)] = text
-    return texts
+    payloads = await fetch_chunk_payloads(client, collection, refs)
+    return {ref: chunk.text for ref, chunk in payloads.items()}
 
 
 def _source_refs(entry: GoldenEntry) -> list[tuple[str, int]]:
@@ -370,9 +448,16 @@ async def _collect_question(
     client: AsyncQdrantClient,
     cache: RewriteCache | None,
     llm: LlmProvider | None,
+    reranker: Reranker | None = None,
 ) -> QuestionRun:
     result = await retrieve_ranked(
-        entry, options.config, embedder=embedder, client=client, cache=cache, llm=llm
+        entry,
+        options.config,
+        embedder=embedder,
+        client=client,
+        cache=cache,
+        llm=llm,
+        reranker=reranker,
     )
     sources = _source_refs(entry)
     texts = await fetch_chunk_texts(
@@ -405,7 +490,31 @@ async def _collect_question(
         ngram_overlap=overlap,
         chunk_tokens=tuple(tokens),
         query=result.query,
+        rerank_ms=result.rerank_ms,
     )
+
+
+WARMUP_TEXT = "warm-up"
+
+
+async def _load_reranker(
+    model_name: str, services: Services
+) -> tuple[Reranker, dict[str, Any]]:
+    """Load the reranker, time the load, make one warm-up call, measure the disk size.
+
+    The warm-up call keeps the first-call cost (lazy setup, thread start) out of the
+    per-question times. Returns the reranker and the run-header fields about it.
+    """
+    started = time.perf_counter()
+    reranker = services.reranker_factory(model_name)
+    load_s = time.perf_counter() - started
+    await reranker.score(WARMUP_TEXT, [WARMUP_TEXT])
+    info: dict[str, Any] = {
+        "reranker_load_s": round(load_s, 2),
+        "reranker_disk_bytes": services.reranker_disk_bytes(model_name),
+    }
+    logger.info("Reranker %s loaded in %.1f s and warmed up", model_name, load_s)
+    return reranker, info
 
 
 async def run_command(options: RunOptions, services: Services) -> list[str]:
@@ -422,7 +531,9 @@ async def run_command(options: RunOptions, services: Services) -> list[str]:
     )
     client = services.client_factory()
 
-    index = await preflight(entries, client, config)
+    index = await preflight(
+        entries, client, config, skip_source_chunks=options.rechunked
+    )
     logger.info(
         "Pre-flight passed: %d chunks in %r, %d golden questions",
         index.chunk_count,
@@ -464,6 +575,10 @@ async def run_command(options: RunOptions, services: Services) -> list[str]:
                 logger.info("All %d rewrites are cached; no LLM needed", len(entries))
 
         embedder = services.embedder_factory(config.embedder)
+        reranker: Reranker | None = None
+        reranker_info: dict[str, Any] | None = None
+        if config.reranker is not None:
+            reranker, reranker_info = await _load_reranker(config.reranker, services)
         questions: list[QuestionRun] = []
         for position, entry in enumerate(entries, start=1):
             questions.append(
@@ -474,6 +589,7 @@ async def run_command(options: RunOptions, services: Services) -> list[str]:
                     client=client,
                     cache=cache,
                     llm=llm,
+                    reranker=reranker,
                 )
             )
             if position % 10 == 0 or position == len(entries):
@@ -481,7 +597,7 @@ async def run_command(options: RunOptions, services: Services) -> list[str]:
 
         meta = RunMeta(
             name=options.name,
-            config=_config_dict(options),
+            config=_config_dict(options, reranker_info),
             golden_sha256=sha256,
             git_hash=git_version(services.git),
             chunk_count=index.chunk_count,
@@ -495,6 +611,7 @@ async def run_command(options: RunOptions, services: Services) -> list[str]:
         logger.info("Run written: %s; report: %s", run_path, report_path)
 
         if options.langsmith:
+            threshold = default_threshold(meta)
             outcome = await run_experiment(
                 entries,
                 config,
@@ -505,11 +622,16 @@ async def run_command(options: RunOptions, services: Services) -> list[str]:
                 llm=llm,
                 aevaluate_fn=services.aevaluate_factory(),
                 dataset_name=options.dataset_name or DATASET_NAME,
+                threshold=threshold,
+                reranker=reranker,
             )
-            check_against_local(outcome, local_experiment_scores(record, entries))
+            check_against_local(
+                outcome, local_experiment_scores(record, entries, threshold=threshold)
+            )
             lines.append(
                 f"LangSmith experiment finished at k={EXPERIMENT_K}, "
-                f"t={EXPERIMENT_THRESHOLD}; its scores equal the local run."
+                f"t={threshold} ({meta.score_kind} scores); its scores equal the "
+                "local run."
             )
     return lines
 
@@ -531,9 +653,42 @@ def make_run_options(
     no_llm: bool = False,
     langsmith: bool = False,
     dataset_name: str | None = None,
+    depth: int | None = None,
+    rerank_query: RerankQuery | None = None,
+    reranker: str | None = None,
+    rechunked: bool = False,
 ) -> RunOptions:
-    """Resolve a named config plus overrides into `RunOptions`."""
+    """Resolve a named config plus overrides into `RunOptions`.
+
+    `depth`, `rerank_query` and `reranker` change what the named config measures, so
+    they need an explicit `name`: without one the run would overwrite the named
+    config's own run file. `reranker` is a model name or an alias of `RERANKER_MODELS`.
+    """
     spec = NAMED_CONFIGS[config_name]
+    changed = [
+        flag
+        for flag, value in (
+            ("--depth", depth),
+            ("--rerank-query", rerank_query),
+            ("--reranker", reranker),
+        )
+        if value is not None
+    ]
+    if rechunked and not (name and collection):
+        raise RunError(
+            "--rechunked needs --name and --collection (otherwise the run would "
+            f"overwrite {config_name}.json or read the app collection)"
+        )
+    if changed and not name:
+        raise RunError(
+            f"{', '.join(changed)} change(s) the config, so --name is required "
+            f"(otherwise the run would overwrite {config_name}.json)"
+        )
+    model = RERANKER_MODELS.get(reranker, reranker) if reranker else spec.reranker
+    if rerank_query is not None and model is None:
+        raise RunError(
+            "--rerank-query needs a reranker (--config rerank_* or --reranker)"
+        )
     config = RetrievalConfig(
         embedder=embedder or spec.embedder,
         collection=collection or spec.collection,
@@ -542,7 +697,11 @@ def make_run_options(
         rewrite_model=(
             (rewrite_model or default_rewrite_model()) if spec.rewrite else ""
         ),
-        depth=DEFAULT_DEPTH,
+        depth=depth if depth is not None else DEFAULT_DEPTH,
+        reranker=model,
+        rerank_query=rerank_query or "rewritten",
+        prefilter_threshold=DEFAULT_PREFILTER_THRESHOLD,
+        hybrid=spec.hybrid,
     )
     return RunOptions(
         name=name or config_name,
@@ -558,6 +717,7 @@ def make_run_options(
         no_llm=no_llm,
         langsmith=langsmith,
         dataset_name=dataset_name,
+        rechunked=rechunked,
     )
 
 
@@ -575,23 +735,35 @@ def compare_command(
     reports_dir: Path,
     metric: Metric = "ndcg",
     k: int = PRIMARY_CUTOFF.k,
-    threshold: float = PRIMARY_CUTOFF.threshold,
+    threshold: float | None = None,
     threshold_b: float | None = None,
     threshold_rule: bool = False,
     resamples: int = 1000,
     out: Path | None = None,
 ) -> list[str]:
-    """Compare run B against run A; write the report, return the verdict lines."""
+    """Compare run B against run A; write the report, return the verdict lines.
+
+    Without `threshold`, each run is cut at the default for its score kind: 0.6 for
+    cosine runs, 0 for reranked and hybrid runs (their scores are not cosine).
+    `threshold` sets both sides, `threshold_b` overrides B.
+    """
     entries = load_golden(golden_path)
     sha256 = golden_sha256(golden_path)
     record_a, record_b = load_runs([run_a, run_b], runs_dir, sha256, golden_path)
+    cut_a = threshold if threshold is not None else default_threshold(record_a.meta)
+    if threshold_b is not None:
+        cut_b = threshold_b
+    elif threshold is not None:
+        cut_b = threshold
+    else:
+        cut_b = default_threshold(record_b.meta)
     comparison = compare_runs(
         record_a,
         record_b,
         entries,
         metric=metric,
-        cutoff_a=Cutoff(k, threshold),
-        cutoff_b=Cutoff(k, threshold_b if threshold_b is not None else threshold),
+        cutoff_a=Cutoff(k, cut_a),
+        cutoff_b=Cutoff(k, cut_b),
         resamples=resamples,
     )
     use_threshold_rule = threshold_rule or threshold_b is not None
@@ -620,11 +792,20 @@ def curve_command(
     reports_dir: Path,
     k: int = PRIMARY_CUTOFF.k,
     out: Path | None = None,
+    gate: bool = False,
 ) -> list[str]:
-    """Threshold curve of one run; write the report, return the lines to print."""
+    """Threshold curve of one run; write the report, return the lines to print.
+
+    With `gate` it is the refusal curve instead: the top-1 score swept from 0 to 1,
+    with the off-corpus questions refused and the on-corpus questions lost per `t`.
+    """
     entries = load_golden(golden_path)
     sha256 = golden_sha256(golden_path)
     (record,) = load_runs([run], runs_dir, sha256, golden_path)
+    if gate:
+        gate_target = out or reports_dir / f"gate-{record.meta.name}.md"
+        write_text(gate_target, render_gate_curve(gate_curve(record, entries)))
+        return [f"Report written: {gate_target}"]
     target = out or reports_dir / f"curve-{record.meta.name}.md"
     write_text(target, render_threshold_curve(threshold_curve(record, entries, k=k)))
     return [f"Report written: {target}"]

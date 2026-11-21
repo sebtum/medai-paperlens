@@ -18,6 +18,7 @@ from pathlib import Path
 import dotenv
 
 from app.evaluation.authoring import (
+    DEFAULT_ADJUDICATED,
     POOL_DEFAULT_K,
     POOL_DEFAULT_THRESHOLD,
     pool_command,
@@ -33,6 +34,7 @@ from app.evaluation.runner import (
     DEFAULT_RUNS_DIR,
     EVAL_ERRORS,
     NAMED_CONFIGS,
+    RERANKER_MODELS,
     Services,
     compare_command,
     curve_command,
@@ -111,6 +113,12 @@ def _add_run(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="Validate and run the pre-flight against Qdrant, then stop.",
     )
     run.add_argument(
+        "--rechunked",
+        action="store_true",
+        help="Collection was cut differently (Phase 10, T11): skip the checks on "
+        "source chunk numbers. Needs --name and --collection.",
+    )
+    run.add_argument(
         "--langsmith",
         action="store_true",
         help=f"Also run a LangSmith experiment (k={EXPERIMENT_K}, "
@@ -118,6 +126,23 @@ def _add_run(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     )
     run.add_argument(
         "--dataset", help="LangSmith dataset name (default: the synced one)."
+    )
+    run.add_argument(
+        "--depth",
+        type=int,
+        help="Chunks retrieved per question (default: the config's, 20). Needs --name.",
+    )
+    run.add_argument(
+        "--rerank-query",
+        choices=["rewritten", "original"],
+        help="Text the reranker reads as the question (default: rewritten). Needs a "
+        "reranker config and --name.",
+    )
+    run.add_argument(
+        "--reranker",
+        help="Reranker model name or alias ("
+        + ", ".join(sorted(RERANKER_MODELS))
+        + "); replaces the config's. Needs --name.",
     )
 
 
@@ -130,7 +155,12 @@ def _add_reports(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> No
     )
     compare.add_argument("--metric", choices=["ndcg", "recall", "mrr"], default="ndcg")
     compare.add_argument("--k", type=int, default=PRIMARY_CUTOFF.k)
-    compare.add_argument("--threshold", type=float, default=PRIMARY_CUTOFF.threshold)
+    compare.add_argument(
+        "--threshold",
+        type=float,
+        help="Cut-off for both runs (default: 0.6 for cosine runs, 0 for reranked "
+        "and hybrid runs).",
+    )
     compare.add_argument(
         "--threshold-b",
         type=float,
@@ -148,6 +178,12 @@ def _add_reports(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> No
     _common(curve)
     curve.add_argument("run", metavar="RUN", help="Run name or file.")
     curve.add_argument("--k", type=int, default=PRIMARY_CUTOFF.k)
+    curve.add_argument(
+        "--gate",
+        action="store_true",
+        help="Refusal curve instead: the top-1 score swept from 0 to 1, with the "
+        "off-corpus questions refused and the on-corpus questions lost per t.",
+    )
     curve.add_argument("--out", help="Report file (default under --reports-dir).")
 
 
@@ -170,13 +206,35 @@ def _add_authoring(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> 
     _common(pool)
     pool.add_argument("runs", nargs="+", metavar="RUN", help="Run names or files.")
     pool.add_argument("--k", type=int, default=POOL_DEFAULT_K)
-    pool.add_argument("--threshold", type=float, default=POOL_DEFAULT_THRESHOLD)
+    pool.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help=f"Score cut-off for every run (default: {POOL_DEFAULT_THRESHOLD} for "
+        "cosine runs, 0 for reranked and hybrid runs, whose scores are not cosine).",
+    )
     pool.add_argument(
         "--include-off-corpus",
         action="store_true",
         help="Also list candidates for off-corpus questions.",
     )
     pool.add_argument("--out", help="Write the list to this file instead of stdout.")
+    pool.add_argument(
+        "--adjudicated",
+        default=str(DEFAULT_ADJUDICATED),
+        help="File of rejected candidates, skipped in every pass (default: "
+        "%(default)s).",
+    )
+    pool.add_argument(
+        "--reject",
+        nargs=3,
+        action="append",
+        metavar=("QUESTION_ID", "PAPER_ID", "SECTION"),
+        help="Record this candidate as read and rejected, then skip it. Repeatable.",
+    )
+    pool.add_argument(
+        "--reason", default="", help="Short reason stored with the --reject rows."
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -210,6 +268,10 @@ def _dispatch(args: argparse.Namespace, services: Services) -> list[str]:
             no_llm=args.no_llm,
             langsmith=args.langsmith,
             dataset_name=args.dataset,
+            depth=args.depth,
+            rerank_query=args.rerank_query,
+            reranker=args.reranker,
+            rechunked=args.rechunked,
         )
         return asyncio.run(run_command(options, services))
     if args.command == "compare":
@@ -235,6 +297,7 @@ def _dispatch(args: argparse.Namespace, services: Services) -> list[str]:
             reports_dir=Path(args.reports_dir),
             k=args.k,
             out=_path(args.out),
+            gate=args.gate,
         )
     if args.command == "sections":
         return asyncio.run(
@@ -253,6 +316,9 @@ def _dispatch(args: argparse.Namespace, services: Services) -> list[str]:
         threshold=args.threshold,
         include_off_corpus=args.include_off_corpus,
         out=_path(args.out),
+        adjudicated=Path(args.adjudicated),
+        reject=[(q, paper, section) for q, paper, section in args.reject or []],
+        reason=args.reason,
     )
 
 

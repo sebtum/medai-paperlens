@@ -49,7 +49,7 @@ QUOTAS: dict[QuestionType, int] = {
     QuestionType.CROSS_PAPER: 8,
     QuestionType.TABLE: 8,
     QuestionType.MULTI_SECTION: 9,
-    QuestionType.OFF_CORPUS: 5,
+    QuestionType.OFF_CORPUS: 20,
 }
 
 # Model names a paraphrased question must not contain, on top of the aliases derived

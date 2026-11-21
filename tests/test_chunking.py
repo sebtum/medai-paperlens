@@ -512,3 +512,63 @@ def test_make_embedder_tokenizer_leaves_room_for_special_tokens() -> None:
 
     assert tokenizer.get_max_tokens() == 510
     assert tokenizer.count_tokens("hello hello") == 2
+
+
+# --- Chunk-size experiment options (Phase 10, T11) -----------------------------------
+
+
+def _experiment(builder: DocBuilder, **kwargs: int | bool) -> list[Chunk]:
+    tokenizer = WhitespaceTokenizer(max_tokens=60)
+    return chunk_paper(
+        MANIFEST,
+        builder.build(),
+        tokenizer,
+        paper_id="p1",
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_max_tokens_lowers_the_budget_and_makes_more_chunks() -> None:
+    builder = DocBuilder().heading("1 Introduction").text(words("i", 40))
+
+    default = _experiment(builder)
+    small = _experiment(builder, max_tokens=20)
+
+    assert len(small) > len(default)
+    assert all(len(c.embed_text.split()) <= 20 for c in small)
+    assert _body(small).split() == _body(default).split()
+
+
+def test_max_tokens_never_raises_the_budget() -> None:
+    builder = DocBuilder().heading("1 Introduction").text(words("i", 40))
+
+    assert _experiment(builder, max_tokens=500) == _experiment(builder)
+
+
+def test_max_tokens_below_the_title_is_an_error() -> None:
+    builder = DocBuilder().heading("1 Introduction").text("a b c")
+
+    with pytest.raises(ValueError, match="no room"):
+        _experiment(builder, max_tokens=2)
+    with pytest.raises(ValueError, match="max_tokens"):
+        _experiment(builder, max_tokens=0)
+
+
+def test_merge_peers_off_keeps_small_paragraphs_apart() -> None:
+    builder = (
+        DocBuilder()
+        .heading("1 Introduction")
+        .text("first short paragraph")
+        .text("second short paragraph")
+    )
+
+    merged = _experiment(builder)
+    apart = _experiment(builder, merge_peers=False)
+
+    assert [c.text for c in merged if c.section == "Introduction"] == [
+        "first short paragraph\nsecond short paragraph"
+    ]
+    assert [c.text for c in apart if c.section == "Introduction"] == [
+        "first short paragraph",
+        "second short paragraph",
+    ]

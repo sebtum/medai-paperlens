@@ -3,11 +3,22 @@ import logging
 import numpy as np
 import numpy.typing as npt
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import ScoredPoint
+from qdrant_client.models import (
+    Document,
+    Fusion,
+    FusionQuery,
+    Prefetch,
+    ScoredPoint,
+)
 
 from app.evaluation.metrics import RankedHit
 from app.models.query import DEFAULT_SCORE_THRESHOLD, Citation
-from app.retrieval.ingestion import COLLECTION_NAME
+from app.retrieval.ingestion import (
+    BM25_MODEL,
+    BM25_VECTOR_NAME,
+    COLLECTION_NAME,
+    DENSE_VECTOR_NAME,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +49,29 @@ async def _query_points(
     return list(results.points)
 
 
+def _ranked_hits(points: list[ScoredPoint]) -> list[RankedHit]:
+    """Scored points as `RankedHit`s; points without a chunk identity are skipped."""
+    hits: list[RankedHit] = []
+    for point in points:
+        payload = point.payload or {}
+        paper_id = _optional_str(payload.get("paper_id"))
+        section = _optional_str(payload.get("section"))
+        chunk_index = _optional_int(payload.get("chunk_index"))
+        if paper_id is None or section is None or chunk_index is None:
+            logger.warning("Skipping result id=%s without chunk identity", point.id)
+            continue
+        hits.append(
+            RankedHit(
+                paper_id=paper_id,
+                section=section,
+                chunk_index=chunk_index,
+                chunk_type=_optional_str(payload.get("chunk_type")) or "text",
+                score=float(point.score),
+            )
+        )
+    return hits
+
+
 async def search_hits(
     vector: npt.NDArray[np.float32],
     client: AsyncQdrantClient,
@@ -59,26 +93,62 @@ async def search_hits(
         score_threshold=score_threshold,
         collection_name=collection_name,
     )
+    return _ranked_hits(points)
 
-    hits: list[RankedHit] = []
-    for point in points:
-        payload = point.payload or {}
-        paper_id = _optional_str(payload.get("paper_id"))
-        section = _optional_str(payload.get("section"))
-        chunk_index = _optional_int(payload.get("chunk_index"))
-        if paper_id is None or section is None or chunk_index is None:
-            logger.warning("Skipping result id=%s without chunk identity", point.id)
-            continue
-        hits.append(
-            RankedHit(
-                paper_id=paper_id,
-                section=section,
-                chunk_index=chunk_index,
-                chunk_type=_optional_str(payload.get("chunk_type")) or "text",
-                score=float(point.score),
-            )
-        )
-    return hits
+
+async def search_hits_hybrid(
+    vector: npt.NDArray[np.float32],
+    query_text: str,
+    client: AsyncQdrantClient,
+    *,
+    top_k: int,
+    dense_threshold: float,
+    prefetch_limit: int | None = None,
+    collection_name: str,
+) -> list[RankedHit]:
+    """Hybrid (dense plus BM25) ranked chunk hits for retrieval evaluation (ADR-0028).
+
+    Eval only: `collection_name` must be a hybrid collection, built by
+    `ingest(..., hybrid=True)`, with the named dense vector `dense` and the sparse
+    vector `bm25`; the app's `papers` collection has neither, so there is deliberately
+    no default.
+
+    Two candidate lists are fetched inside Qdrant and merged by reciprocal rank fusion
+    (RRF): the dense list (`vector`, cosine at or above `dense_threshold`, at most
+    `prefetch_limit` hits, default `top_k`) and the BM25 list (`query_text`, same limit,
+    no threshold, so a chunk can enter through keywords alone). The merged list is
+    cut at `top_k`.
+
+    `vector` is what the dense side embedded, including the BGE instruction prefix.
+    `query_text` is the same rewritten query WITHOUT that prefix: the instruction is
+    a dense-model convention, and its words ("represent", "sentence", "searching",
+    "relevant", "passages") would only add noise terms on the keyword side. The BM25
+    options are the `qdrant/bm25` defaults, as at index time; none is passed.
+
+    `RankedHit.score` is the RRF score, which is rank-based: it is neither a cosine
+    value nor a BM25 value and cannot be cut at 0.6 (the run's score kind is `rrf`).
+    """
+    limit = prefetch_limit if prefetch_limit is not None else top_k
+    results = await client.query_points(
+        collection_name=collection_name,
+        prefetch=[
+            Prefetch(
+                query=vector.tolist(),
+                using=DENSE_VECTOR_NAME,
+                limit=limit,
+                score_threshold=dense_threshold,
+            ),
+            Prefetch(
+                query=Document(text=query_text, model=BM25_MODEL),
+                using=BM25_VECTOR_NAME,
+                limit=limit,
+            ),
+        ],
+        query=FusionQuery(fusion=Fusion.RRF),
+        limit=top_k,
+        with_payload=True,
+    )
+    return _ranked_hits(list(results.points))
 
 
 async def search(
