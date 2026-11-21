@@ -147,6 +147,11 @@ What we learned.
   pieces. That needs its own plan.
 - **If Phase 11 shows shorter context helps** (faster, or no worse answers), re-test the
   merge variant on a larger question set. The no-merge variant is not worth it.
+- **Idea for later (owner, 2026-11-21): smaller chunks to cut time or tokens.** With top 5
+  the evidence is about half as long. With top 10 it is about as long as today (2 x 1282
+  tokens), so the token saving is gone but the answer sees more sections. The reranker time
+  stays about half as long only while the depth stays 20; if the depth must double to keep
+  the coverage, that saving is gone too. Untested at top 10 and at depth 40.
 
 Limits of this addendum. 45 on-corpus questions, per type 8 to 10. Labels come from the
 same author as the questions. New labels were added only from the top 5 of the two

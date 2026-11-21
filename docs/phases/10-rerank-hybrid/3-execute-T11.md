@@ -27,6 +27,17 @@ Details: the papers were cut again with a cap of 256 tokens (the whole embedded 
 - **The wrong-section share only moved from 28.4 % to 25.8 %**, still above the 25 % limit. Cutting smaller does not remove the problem.
 - **Same score with about half the text.** Evidence tokens fell from 2556 to 1282 (merge) and the reranker time from 1592 ms to 795 ms. Whether shorter context helps the answer step can only be judged with the generation evaluation (Phase 11). If it does, re-test the merge variant then.
 
+## Idea for later: smaller chunks to save time or tokens
+
+Smaller chunks are a good option for later, to cut the cost of the answer step. Two ways to use them, and they pull against each other:
+
+| Use | Evidence text per answer | Reranker time | Open question |
+|---|---|---|---|
+| Keep top 5 | about half (1282 vs 2556 tokens) | about half (795 vs 1592 ms) | Do answers stay as good with shorter pieces? (Phase 11) |
+| Raise to top 10 | about the same as today (2 x 1282 = 2564 tokens) | still about half, if depth stays 20 | Does seeing 10 focused pieces beat 5 big ones? The token saving is gone, but the spread over more sections may help answers. |
+
+Details: the reranker time depends on how many candidates it scores (depth 20) and how long each is, not on the top-k cut, so top 10 alone does not bring it back. It would come back if the depth also had to double to 40 to keep the same text coverage (depth 40 took about twice as long on the current chunks). Both variants are untested: no `chunk256` run exists at top 10 or depth 40, and the effect on answers needs the generation evaluation. If tried, re-test the merge variant, compare nDCG@10 and the generation score, and record the answer-step time too (the local LLM's time grows with prompt tokens, which is the saving that top 10 would give back).
+
 ## Labels and golden set
 
 The two runs put 20 sections into the top 5 that no earlier pass had seen. They were read by text only: 3 added (grade 1), 17 rejected with a reason. Golden hash is now `0c62886fd489` (65 questions, 164 labels), and every kept run was re-run on it. The six bge and medcpt runs stay on the old hash `cc08395a87ca` (owner decision). Numbers in ADR-0025 and ADR-0026 are from earlier hashes and are not changed.
